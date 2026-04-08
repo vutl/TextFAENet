@@ -26,6 +26,7 @@ class QaTaCOV19Dataset(Dataset):
         root_dir: str,
         split: str,
         image_size: int = 224,
+        use_text: bool = True,
         max_samples: int | None = None,
     ) -> None:
         super().__init__()
@@ -36,6 +37,7 @@ class QaTaCOV19Dataset(Dataset):
         self.root = Path(root_dir)
         self.split = split
         self.image_size = image_size
+        self.use_text = use_text
         self.max_samples = max_samples
 
         split_dir = self.root / ("Train" if split == "train" else "Test")
@@ -43,10 +45,14 @@ class QaTaCOV19Dataset(Dataset):
         self.masks_dir = split_dir / "GTs"
         self.prompt_csv = self.root / "prompt" / f"{split}.csv"
 
-        if not self.images_dir.exists() or not self.masks_dir.exists() or not self.prompt_csv.exists():
+        if not self.images_dir.exists() or not self.masks_dir.exists():
             raise FileNotFoundError(
                 f"Dataset folders/files missing for split={split}. "
-                f"Expected: {self.images_dir}, {self.masks_dir}, {self.prompt_csv}"
+                f"Expected: {self.images_dir}, {self.masks_dir}"
+            )
+        if self.use_text and not self.prompt_csv.exists():
+            raise FileNotFoundError(
+                f"Prompt CSV missing for split={split}. Expected: {self.prompt_csv}"
             )
 
         self.samples = self._build_samples()
@@ -54,6 +60,28 @@ class QaTaCOV19Dataset(Dataset):
             self.samples = self.samples[: self.max_samples]
 
     def _build_samples(self) -> list[QaTaSample]:
+        if not self.use_text:
+            samples: list[QaTaSample] = []
+            for mask_path in sorted(self.masks_dir.glob("mask_*")):
+                if not mask_path.is_file():
+                    continue
+                image_name = mask_path.name[len("mask_") :]
+                image_path = self.images_dir / image_name
+                if not image_path.exists():
+                    continue
+                samples.append(
+                    QaTaSample(
+                        image_path=image_path,
+                        mask_path=mask_path,
+                        mask_name=mask_path.name,
+                        description="",
+                    )
+                )
+
+            if not samples:
+                raise RuntimeError(f"No valid samples found for split={self.split} in {self.root}")
+            return samples
+
         descriptions: dict[str, str] = {}
         with self.prompt_csv.open("r", encoding="utf-8", newline="") as f:
             reader = csv.DictReader(f)

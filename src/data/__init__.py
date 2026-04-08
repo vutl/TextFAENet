@@ -1,1 +1,4 @@
 from .qata_cov19 import QaTaCOV19Dataset
+from .mosmed_2d import MosMed2DSegmentationDataset
+from .mosmed_text_csv import MosMedTextCSVDataset
+from .prompted_folder_seg import PromptedFolderSegmentationDataset

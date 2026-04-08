@@ -11,8 +11,9 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torch.optim import AdamW
 from torch.optim import SGD
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
@@ -71,7 +72,7 @@ class TextSegCollator:
     def __call__(self, batch):
         images = torch.stack([x["image"] for x in batch], dim=0)
         masks = torch.stack([x["mask"] for x in batch], dim=0)
-        texts = [x["text"] for x in batch]
+        texts = [x.get("text", "") for x in batch]
         names = [x["mask_name"] for x in batch]
 
         out = {
@@ -169,7 +170,7 @@ def train_one_epoch(model, loader, optimizer, criterion, device, scaler, args):
         mask = batch["mask"].to(device, non_blocking=True)
 
         optimizer.zero_grad(set_to_none=True)
-        with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=(device.type == "cuda")):
+        with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=args.use_amp):
             if args.model_type == "faenet":
                 logits = model(image)
                 aux = None
@@ -191,9 +192,13 @@ def train_one_epoch(model, loader, optimizer, criterion, device, scaler, args):
                 args.aux_w_d2,
             )
 
-        scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
+        if args.use_amp:
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            optimizer.step()
 
         m = batch_metrics(logits.detach(), mask)
         total_loss += loss.item()
@@ -258,9 +263,25 @@ def poly_lr(base_lr: float, epoch: int, max_epochs: int, power: float) -> float:
     return base_lr * ((1.0 - (epoch / max_epochs)) ** power)
 
 
+def cosine_lr(base_lr: float, epoch: int, max_epochs: int, min_lr: float) -> float:
+    if max_epochs <= 1:
+        return base_lr
+    t = epoch / (max_epochs - 1)
+    return min_lr + 0.5 * (base_lr - min_lr) * (1.0 + np.cos(np.pi * t))
+
+
 def append_log_line(path: Path, line: str) -> None:
     with path.open("a", encoding="utf-8") as f:
         f.write(line + "\n")
+
+
+def load_checkpoint(path: Path, device: torch.device):
+    # PyTorch 2.6 changed torch.load default to weights_only=True.
+    # Our checkpoints include optimizer state and metadata, so we explicitly disable it.
+    try:
+        return torch.load(path, map_location=device, weights_only=False)
+    except TypeError:
+        return torch.load(path, map_location=device)
 
 
 def checkpoint_state_dict(model: nn.Module, args) -> dict[str, torch.Tensor]:
@@ -285,13 +306,38 @@ def main() -> None:
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--lr", type=float, default=0.02)
+    parser.add_argument("--min-lr", type=float, default=1e-5)
     parser.add_argument("--poly-power", type=float, default=0.9)
+    parser.add_argument(
+        "--lr-scheduler",
+        type=str,
+        choices=["poly", "cosine"],
+        default="poly",
+    )
+    parser.add_argument(
+        "--optimizer",
+        type=str,
+        choices=["sgd", "adamw"],
+        default="sgd",
+    )
     parser.add_argument("--momentum", type=float, default=0.9)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--early-stop-patience", type=int, default=0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max-text-len", type=int, default=64)
     parser.add_argument("--max-train-samples", type=int, default=None)
     parser.add_argument("--max-test-samples", type=int, default=None)
+    parser.add_argument("--val-ratio", type=float, default=0.2)
+    parser.add_argument(
+        "--use-test-as-val",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--no-text",
+        action="store_true",
+        default=False,
+    )
 
     parser.add_argument("--use-cxr-bert", action="store_true", default=True)
     parser.add_argument("--cxr-bert-dir", type=str, default="BiomedVLP-CXR-BERT-specialized")
@@ -316,24 +362,48 @@ def main() -> None:
     parser.add_argument("--spatial-sharpen-power", type=float, default=2.0)
 
     args = parser.parse_args()
+    if args.no_text and args.model_type != "faenet":
+        raise ValueError("--no-text is only supported with --model-type faenet")
+    if not 0.0 < args.val_ratio < 1.0:
+        raise ValueError("--val-ratio must be in (0, 1)")
     set_seed(args.seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    args.use_amp = device.type == "cuda" and args.model_type != "faenet"
 
     model, tokenizer = create_model(args, device)
 
-    train_ds = QaTaCOV19Dataset(
+    train_full_ds = QaTaCOV19Dataset(
         root_dir=args.data_root,
         split="train",
         image_size=args.image_size,
+        use_text=not args.no_text,
         max_samples=args.max_train_samples,
     )
     test_ds = QaTaCOV19Dataset(
         root_dir=args.data_root,
         split="test",
         image_size=args.image_size,
+        use_text=not args.no_text,
         max_samples=args.max_test_samples,
     )
+
+    if args.use_test_as_val:
+        train_ds = train_full_ds
+        val_ds = test_ds
+    else:
+        total = len(train_full_ds)
+        val_count = max(1, int(total * args.val_ratio))
+        if val_count >= total:
+            val_count = total - 1
+
+        rng = random.Random(args.seed)
+        indices = list(range(total))
+        rng.shuffle(indices)
+        val_idx = indices[:val_count]
+        train_idx = indices[val_count:]
+        train_ds = Subset(train_full_ds, train_idx)
+        val_ds = Subset(train_full_ds, val_idx)
 
     collate_fn = TextSegCollator(
         tokenizer=tokenizer if args.model_type != "faenet" else None,
@@ -349,8 +419,8 @@ def main() -> None:
         drop_last=False,
         collate_fn=collate_fn,
     )
-    test_loader = DataLoader(
-        test_ds,
+    val_loader = DataLoader(
+        val_ds,
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.num_workers,
@@ -360,14 +430,21 @@ def main() -> None:
     )
 
     criterion = SegLoss()
-    optimizer = SGD(
-        model.parameters(),
-        lr=args.lr,
-        momentum=args.momentum,
-        weight_decay=args.weight_decay,
-        nesterov=False,
-    )
-    scaler = torch.amp.GradScaler(enabled=(device.type == "cuda"))
+    if args.optimizer == "adamw":
+        optimizer = AdamW(
+            model.parameters(),
+            lr=args.lr,
+            weight_decay=args.weight_decay,
+        )
+    else:
+        optimizer = SGD(
+            model.parameters(),
+            lr=args.lr,
+            momentum=args.momentum,
+            weight_decay=args.weight_decay,
+            nesterov=False,
+        )
+    scaler = torch.amp.GradScaler(enabled=args.use_amp)
 
     start_epoch = 1
     base_phase_lr = args.lr
@@ -377,7 +454,7 @@ def main() -> None:
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Resume checkpoint not found: {ckpt_path}")
 
-        ckpt = torch.load(ckpt_path, map_location=device)
+        ckpt = load_checkpoint(ckpt_path, device)
         model.load_state_dict(ckpt["model_state"], strict=False)
         if "optimizer_state" in ckpt:
             optimizer.load_state_dict(ckpt["optimizer_state"])
@@ -398,12 +475,16 @@ def main() -> None:
     config_path.write_text(json.dumps(vars(args), indent=2), encoding="utf-8")
     append_log_line(txt_log_path, f"save_dir={save_dir}")
     append_log_line(txt_log_path, f"device={device}")
-    append_log_line(txt_log_path, f"train_samples={len(train_ds)} test_samples={len(test_ds)}")
+    append_log_line(
+        txt_log_path,
+        f"train_samples={len(train_ds)} val_samples={len(val_ds)} test_samples={len(test_ds)}",
+    )
     append_log_line(txt_log_path, json.dumps(vars(args), ensure_ascii=False))
     if resumed_from is not None:
         append_log_line(txt_log_path, f"resume_from={resumed_from} start_epoch={start_epoch}")
 
     best_dice = -1.0
+    no_improve_epochs = 0
     history: list[dict[str, float]] = []
     history_path = save_dir / "history.json"
     if args.resume_ckpt is not None and history_path.exists():
@@ -416,7 +497,10 @@ def main() -> None:
 
     for epoch in range(start_epoch, end_epoch + 1):
         phase_epoch = epoch - start_epoch
-        lr = poly_lr(base_phase_lr, phase_epoch, total_phase_epochs, args.poly_power)
+        if args.lr_scheduler == "cosine":
+            lr = cosine_lr(base_phase_lr, phase_epoch, total_phase_epochs, args.min_lr)
+        else:
+            lr = poly_lr(base_phase_lr, phase_epoch, total_phase_epochs, args.poly_power)
         for pg in optimizer.param_groups:
             pg["lr"] = lr
 
@@ -431,7 +515,7 @@ def main() -> None:
         )
         val_stats = validate(
             model=model,
-            loader=test_loader,
+            loader=val_loader,
             criterion=criterion,
             device=device,
             args=args,
@@ -476,6 +560,7 @@ def main() -> None:
 
         if row["val_dice"] > best_dice:
             best_dice = row["val_dice"]
+            no_improve_epochs = 0
             best_ckpt = save_dir / "best.pt"
             torch.save(
                 {
@@ -487,19 +572,40 @@ def main() -> None:
                 },
                 best_ckpt,
             )
+        else:
+            no_improve_epochs += 1
 
         history_path.write_text(json.dumps(history, indent=2), encoding="utf-8")
+
+        if args.early_stop_patience > 0 and no_improve_epochs >= args.early_stop_patience:
+            append_log_line(
+                txt_log_path,
+                f"early_stop epoch={epoch} no_improve_epochs={no_improve_epochs} best_dice={best_dice:.6f}",
+            )
+            print(
+                f"Early stopping at epoch {epoch}: "
+                f"no improvement for {no_improve_epochs} epochs (best_dice={best_dice:.4f})"
+            )
+            break
 
     print(f"Training done. Best val dice: {best_dice:.4f}")
 
     best_ckpt = save_dir / "best.pt"
     if best_ckpt.exists():
-        checkpoint = torch.load(best_ckpt, map_location=device)
+        checkpoint = load_checkpoint(best_ckpt, device)
         model.load_state_dict(checkpoint["model_state"], strict=False)
         best_epoch = checkpoint.get("epoch", -1)
         test_stats = validate(
             model=model,
-            loader=test_loader,
+            loader=DataLoader(
+                test_ds,
+                batch_size=args.batch_size,
+                shuffle=False,
+                num_workers=args.num_workers,
+                pin_memory=True,
+                drop_last=False,
+                collate_fn=collate_fn,
+            ),
             criterion=criterion,
             device=device,
             args=args,

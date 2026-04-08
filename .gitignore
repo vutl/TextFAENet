@@ -1,2 +1,7 @@
 runs/
-BiomedVLP-CXR-BERT-specializedpytorch_model.bin
+BiomedVLP-CXR-BERT-specialized/pytorch_model.bin
+datasets/
+logs/
+paper_figures/
+.hf_cache/
+*.tmp
