@@ -1,0 +1,160 @@
+\begin{thebibliography}{10}
+\providecommand{\url}[1]{\texttt{#1}}
+\providecommand{\urlprefix}{URL }
+\providecommand{\doi}[1]{https://doi.org/#1}
+
+\bibitem{aldhabyani2020busi}
+Al-Dhabyani, W., Gomaa, M., Khaled, H., Fahmy, A.: Dataset of breast ultrasound
+  images. Data in Brief  \textbf{28},  104863 (2020)
+
+\bibitem{boecking2022cxrbert}
+Boecking, B., Usuyama, N., Bannur, S., Castro, D.C., Schwaighofer, A., Hyland,
+  S., Wetscherek, M., Naumann, T., Nori, A., Alvarez-Valle, J., Poon, H.,
+  Oktay, O.: Making the most of text semantics to improve biomedical
+  vision-language processing. In: European Conference on Computer Vision
+  (ECCV). pp. 1--21. Springer (2022)
+
+\bibitem{buda2019association}
+Buda, M., Saha, A., Mazurowski, M.A.: Association of genomic subtypes of
+  lower-grade gliomas with shape features automatically extracted by a deep
+  learning algorithm. Computers in Biology and Medicine  \textbf{109},
+  218--225 (2019)
+
+\bibitem{cao2022swinunet}
+Cao, H., Wang, Y., Chen, J., Jiang, D., Zhang, X., Tian, Q., Wang, M.:
+  Swin-unet: Unet-like pure transformer for medical image segmentation. In:
+  European Conference on Computer Vision Workshops (ECCVW). pp. 205--218.
+  Springer (2022)
+
+\bibitem{chen2024transunet}
+Chen, J., Lu, Y., Yu, Q., Luo, X., Adeli, E., Wang, Y., Lu, L., Yuille, A.L.,
+  Zhou, Y.: Transunet: Rethinking the u-net architecture design for medical
+  image segmentation through the lens of transformers. Medical Image Analysis
+  \textbf{97},  103280 (2024)
+
+\bibitem{chen2024causalclipseg}
+Chen, Y., Wei, M., Zheng, Z., Hu, J., Shi, Y., Xiong, S., Zhu, X.X., Mou, L.:
+  {CausalCLIPSeg}: Unlocking clip's potential in referring medical image
+  segmentation with causal intervention. In: Medical Image Computing and
+  Computer-Assisted Intervention (MICCAI). pp. 77--87. Springer (2024)
+
+\bibitem{degerli2022osegnet}
+Degerli, A., Kiranyaz, S., Chowdhury, M.E.H., Gabbouj, M.: {OSegNet}:
+  Operational segmentation network for {COVID-19} detection using chest x-ray
+  images. In: IEEE International Conference on Image Processing (ICIP). pp.
+  2306--2310 (2022)
+
+\bibitem{guo2024tgcam}
+Guo, Y., Zeng, X., Zeng, P., Fei, Y., Wen, L., Zhou, J., Wang, Y.: Common
+  vision-language attention for text-guided medical image segmentation of
+  pneumonia. In: Medical Image Computing and Computer-Assisted Intervention
+  (MICCAI). pp. 192--201. Springer (2024)
+
+\bibitem{hu2024lga}
+Hu, J., Li, Y., Sun, H., Song, Y., Zhang, C., Lin, L., Chen, Y.W.: {LGA}: A
+  language guide adapter for advancing the sam model's capabilities in medical
+  image segmentation. In: Medical Image Computing and Computer-Assisted
+  Intervention (MICCAI). pp. 610--620. Springer (2024)
+
+\bibitem{huang2024reclmis}
+Huang, X., Li, H., Cao, M., Chen, L., You, C., An, D.: Cross-modal conditioned
+  reconstruction for language-guided medical image segmentation. IEEE
+  Transactions on Medical Imaging  \textbf{44}(4),  1821--1835 (2025)
+
+\bibitem{isensee2021nnunet}
+Isensee, F., Jaeger, P.F., Kohl, S.A.A., Petersen, J., Maier-Hein, K.H.:
+  nnu-net: a self-configuring method for deep learning-based biomedical image
+  segmentation. Nature Methods  \textbf{18}(2),  203--211 (2021)
+
+\bibitem{kirillov2023sam}
+Kirillov, A., Mintun, E., Ravi, N., Mao, H., Rolland, C., Gustafson, L., Xiao,
+  T., Whitehead, S., Berg, A.C., Lo, W.Y., Doll{\'a}r, P., Girshick, R.:
+  Segment anything. In: IEEE/CVF International Conference on Computer Vision
+  (ICCV). pp. 4015--4026 (2023)
+
+\bibitem{koleilat2024medclipsam}
+Koleilat, T., Asgariandehkordi, H., Rivaz, H., Xiao, Y.: {MedCLIP-SAMv2}:
+  Towards universal text-driven medical image segmentation. Medical Image
+  Analysis  \textbf{106},  103749 (2025)
+
+\bibitem{li2023lvit}
+Li, Z., Li, Y., Li, Q., Wang, P., Guo, D., Lu, L., Jin, D., Zhang, Y., Hong,
+  Q.: {LViT}: Language meets vision transformer in medical image segmentation.
+  IEEE Transactions on Medical Imaging  \textbf{43}(1),  96--107 (2023)
+
+\bibitem{morozov2020mosmeddata}
+Morozov, S., Andreychenko, A., Pavlov, N., Vladzymyrskyy, A., Ledikhova, N.,
+  Gombolevskiy, V., Blokhin, I., Gelezhe, P., Gonchar, A., Chernina, V.:
+  {MosMedData}: Chest {CT} scans with {COVID-19} related findings dataset.
+  arXiv preprint arXiv:2005.06465  (2020)
+
+\bibitem{qin2021fcanet}
+Qin, Z., Zhang, P., Wu, F., Li, X.: {FcaNet}: Frequency channel attention
+  networks. In: IEEE/CVF International Conference on Computer Vision (ICCV).
+  pp. 763--772 (2021)
+
+\bibitem{ronneberger2015unet}
+Ronneberger, O., Fischer, P., Brox, T.: U-net: Convolutional networks for
+  biomedical image segmentation. In: Medical Image Computing and
+  Computer-Assisted Intervention (MICCAI). pp. 234--241. Springer (2015)
+
+\bibitem{shan2025stpnet}
+Shan, D., Li, Z., Li, Y., Li, Q., Tian, J., Hong, Q.: {STPNet}: Scale-aware
+  text prompt network for medical image segmentation. IEEE Transactions on
+  Medical Imaging  (2025), arXiv:2504.01561
+
+\bibitem{wang2022uctransnet}
+Wang, H., Cao, P., Wang, J., Zaiane, O.R.: {UCTransNet}: Rethinking the skip
+  connections in u-net from a channel-wise perspective with transformer. In:
+  AAAI Conference on Artificial Intelligence. pp. 2441--2449. No.~3 (2022)
+
+\bibitem{xu2022overview}
+Xu, Z.Q.J., Zhang, Y., Luo, T.: Overview frequency principle/spectral bias in
+  deep learning. arXiv preprint arXiv:2201.07395  (2022)
+
+\bibitem{ye2024sgseg}
+Ye, S., Meng, M., Li, M., Feng, D., Kim, J.: Enabling text-free inference in
+  language-guided segmentation of chest x-rays via self-guidance. In: Medical
+  Image Computing and Computer-Assisted Intervention (MICCAI). pp. 242--252.
+  Springer (2024)
+
+\bibitem{yu2025fmiseg}
+Yu, B., Yang, J., Du, Z., Huang, Y., Li, C., Wang, L.: Frequency-domain
+  multi-modal fusion for language-guided medical image segmentation. arXiv
+  preprint arXiv:2509.19719  (2025)
+
+\bibitem{zhang2023fsanet}
+Zhang, F., Panahi, A., Gao, G.: {FsaNet}: Frequency self-attention for semantic
+  segmentation. IEEE Transactions on Image Processing  \textbf{32},  4757--4772
+  (2023)
+
+\bibitem{zhang2024madapter}
+Zhang, X., Ni, B., Yang, Y., Zhang, L.: {MAdapter}: A better interaction
+  between image and language for medical image segmentation. In: Medical Image
+  Computing and Computer-Assisted Intervention (MICCAI). pp. 425--434. Springer
+  (2024)
+
+\bibitem{zhong2025faenet}
+Zhong, J., Zeng, T., Xu, Z., Wu, C., Qian, S., Xu, N., Chen, Z., Lyu, X., Li,
+  X.: A frequency attention-enhanced network for semantic segmentation of
+  high-resolution remote sensing images. Remote Sensing  \textbf{17}(3), ~402
+  (2025)
+
+\bibitem{zhong2023ariadne}
+Zhong, Y., Xu, M., Liang, K., Chen, K., Wu, M.: Ariadne's thread: Using text
+  prompts to improve segmentation of infected areas from chest x-ray images.
+  In: Medical Image Computing and Computer-Assisted Intervention (MICCAI). pp.
+  724--733. Springer (2023)
+
+\bibitem{zhou2023xnet}
+Zhou, Y., Huang, J., Wang, C., Song, L., Yang, G.: {XNet}: Wavelet-based low
+  and high frequency fusion networks for fully- and semi-supervised semantic
+  segmentation of biomedical images. In: IEEE/CVF International Conference on
+  Computer Vision (ICCV). pp. 21085--21096 (2023)
+
+\bibitem{zhou2020unetpp}
+Zhou, Z., Rahman~Siddiquee, M.M., Tajbakhsh, N., Liang, J.: Unet++: Redesigning
+  skip connections to exploit multiscale features in image segmentation. IEEE
+  Transactions on Medical Imaging  \textbf{39}(6),  1856--1867 (2020)
+
+\end{thebibliography}

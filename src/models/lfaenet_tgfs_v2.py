@@ -178,6 +178,23 @@ class FreqA(nn.Module):
         return x + rec
 
 
+class EncoderStagePlain(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int, use_attention: bool = False) -> None:
+        super().__init__()
+        self.block = ConvBlock(in_channels, out_channels)
+        self.freqa = FreqA(out_channels, use_attention=use_attention)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        text_pooled: Optional[torch.Tensor] = None,
+        text_tokens: Optional[torch.Tensor] = None,
+        text_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        del text_pooled, text_tokens, text_mask
+        return self.freqa(self.block(x))
+
+
 class SimpleTextEncoder(nn.Module):
     def __init__(self, vocab_size: int, text_dim: int, pad_id: int = 0) -> None:
         super().__init__()
@@ -199,8 +216,54 @@ class SimpleTextEncoder(nn.Module):
         return x, pooled
 
 
+class LoRALinear(nn.Module):
+    def __init__(self, base: nn.Linear, rank: int, alpha: float | None = None) -> None:
+        super().__init__()
+        if rank <= 0:
+            raise ValueError("LoRA rank must be positive.")
+        self.base = base
+        for p in self.base.parameters():
+            p.requires_grad = False
+        self.lora_a = nn.Linear(base.in_features, rank, bias=False)
+        self.lora_b = nn.Linear(rank, base.out_features, bias=False)
+        self.scale = float(alpha if alpha is not None else rank) / float(rank)
+        nn.init.kaiming_uniform_(self.lora_a.weight, a=5 ** 0.5)
+        nn.init.zeros_(self.lora_b.weight)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.base(x) + self.lora_b(self.lora_a(x)) * self.scale
+
+
+def _bert_encoder_layers(model: nn.Module) -> list[nn.Module]:
+    base = getattr(model, "bert", model)
+    encoder = getattr(base, "encoder", None)
+    layers = getattr(encoder, "layer", None)
+    if isinstance(layers, (nn.ModuleList, list, tuple)):
+        return list(layers)
+    return []
+
+
+def _inject_qv_lora(module: nn.Module, rank: int) -> int:
+    replaced = 0
+    for name, child in list(module.named_children()):
+        if isinstance(child, nn.Linear) and name in {"query", "value"}:
+            setattr(module, name, LoRALinear(child, rank=rank))
+            replaced += 1
+        else:
+            replaced += _inject_qv_lora(child, rank=rank)
+    return replaced
+
+
 class CXRBertTextEncoder(nn.Module):
-    def __init__(self, model_dir: str, out_dim: int, freeze: bool = True, use_mean_pool: bool = True) -> None:
+    def __init__(
+        self,
+        model_dir: str,
+        out_dim: int,
+        freeze: bool = True,
+        use_mean_pool: bool = True,
+        unfreeze_last_n: int = 0,
+        lora_r: int = 0,
+    ) -> None:
         super().__init__()
         from transformers import AutoConfig, AutoModel
         model_path = Path(model_dir)
@@ -211,9 +274,26 @@ class CXRBertTextEncoder(nn.Module):
         hidden = int(getattr(cfg, "hidden_size", 768))
         self.token_proj = nn.Identity() if hidden == out_dim else nn.Linear(hidden, out_dim)
         self.use_mean_pool = use_mean_pool
+        self.unfreeze_last_n = max(0, int(unfreeze_last_n))
+        self.lora_r = max(0, int(lora_r))
         if freeze:
             for p in self.model.parameters():
                 p.requires_grad = False
+        layers = _bert_encoder_layers(self.model)
+        if self.unfreeze_last_n > 0:
+            if not layers:
+                raise ValueError("--unfreeze-last-n was set, but encoder layers could not be found in CXR-BERT.")
+            for layer in layers[-self.unfreeze_last_n:]:
+                for p in layer.parameters():
+                    p.requires_grad = True
+        if self.lora_r > 0:
+            target_layers = layers[-self.unfreeze_last_n:] if self.unfreeze_last_n > 0 else layers
+            target_modules = target_layers if target_layers else [self.model]
+            self.lora_replaced = sum(_inject_qv_lora(layer, rank=self.lora_r) for layer in target_modules)
+            if self.lora_replaced == 0:
+                raise ValueError("LoRA requested, but no attention query/value Linear layers were found.")
+        else:
+            self.lora_replaced = 0
 
     def forward(self, token_ids: torch.Tensor, attention_mask: Optional[torch.Tensor] = None):
         if attention_mask is None:
@@ -238,14 +318,24 @@ class TGFSBlockV2(nn.Module):
         text_dim: int,
         use_attention: bool = False,
         drop_hh: bool = False,
+        hh_drop_mode: str | None = None,
         lh_hl_scale: float = 1.0,
         spatial_sharpen_power: float = 2.0,
     ) -> None:
         super().__init__()
         self.channels = channels
-        self.drop_hh = drop_hh
+        if hh_drop_mode is None:
+            hh_drop_mode = "zero" if drop_hh else "keep"
+        if hh_drop_mode not in {"zero", "keep", "learned"}:
+            raise ValueError(f"Unsupported hh_drop_mode: {hh_drop_mode}")
+        self.hh_drop_mode = hh_drop_mode
+        self.drop_hh = hh_drop_mode == "zero"
         self.lh_hl_scale = lh_hl_scale
         self.spatial_sharpen_power = spatial_sharpen_power
+        if hh_drop_mode == "learned":
+            self.hh_scale_logit = nn.Parameter(torch.zeros(1, channels, 1, 1))
+        else:
+            self.register_parameter("hh_scale_logit", None)
         self.capture_debug = False
         self.last_debug: Optional[dict[str, torch.Tensor]] = None
         self.local_conv = nn.Sequential(
@@ -323,8 +413,15 @@ class TGFSBlockV2(nn.Module):
         lh = lh * a_lh * self.lh_hl_scale
         hl = hl * a_hl * self.lh_hl_scale
         hh = hh * a_hh
-        if self.drop_hh:
+        if self.hh_drop_mode == "zero":
             hh = torch.zeros_like(hh)
+            hh_scale_debug = torch.zeros(1, dtype=torch.float32)
+        elif self.hh_drop_mode == "learned":
+            hh_scale = torch.sigmoid(self.hh_scale_logit).to(dtype=hh.dtype)
+            hh = hh * hh_scale
+            hh_scale_debug = hh_scale.detach().mean().cpu().float().view(1)
+        else:
+            hh_scale_debug = torch.ones(1, dtype=torch.float32)
         ll, lh, hl, hh = self.ccca(ll, lh, hl, hh)
         agg = torch.cat([ll, lh, hl, hh], dim=1)
         spatial_mask = self._token_grounding(agg, text_tokens, text_mask)
@@ -336,6 +433,7 @@ class TGFSBlockV2(nn.Module):
                 "a_hl_mean": a_hl.mean(dim=(1, 2, 3)).detach().cpu(),
                 "a_hh_mean": a_hh.mean(dim=(1, 2, 3)).detach().cpu(),
                 "lh_hl_scale": torch.tensor([self.lh_hl_scale], dtype=torch.float32),
+                "hh_scale": hh_scale_debug,
                 "spatial_mask": spatial_mask.detach().cpu(),
             }
         agg = agg * spatial_mask
@@ -351,6 +449,41 @@ class TGFSBlockV2(nn.Module):
         return out
 
 
+class EncoderStageText(nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        text_dim: int,
+        use_attention: bool = False,
+        drop_hh: bool = False,
+        hh_drop_mode: str | None = None,
+        lh_hl_scale: float = 1.0,
+        spatial_sharpen_power: float = 2.0,
+    ) -> None:
+        super().__init__()
+        self.block = ConvBlock(in_channels, out_channels)
+        self.tgfs = TGFSBlockV2(
+            out_channels,
+            text_dim=text_dim,
+            use_attention=use_attention,
+            drop_hh=drop_hh,
+            hh_drop_mode=hh_drop_mode,
+            lh_hl_scale=lh_hl_scale,
+            spatial_sharpen_power=spatial_sharpen_power,
+        )
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        text_pooled: torch.Tensor,
+        text_tokens: torch.Tensor,
+        text_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        x = self.block(x)
+        return self.tgfs(x, text_pooled=text_pooled, text_tokens=text_tokens, text_mask=text_mask)
+
+
 class TGFSDecoderStageV2(nn.Module):
     def __init__(
         self,
@@ -360,6 +493,7 @@ class TGFSDecoderStageV2(nn.Module):
         text_dim: int,
         use_attention: bool,
         drop_hh: bool = False,
+        hh_drop_mode: str | None = None,
         lh_hl_scale: float = 1.0,
         spatial_sharpen_power: float = 2.0,
     ) -> None:
@@ -375,6 +509,7 @@ class TGFSDecoderStageV2(nn.Module):
             text_dim=text_dim,
             use_attention=use_attention,
             drop_hh=drop_hh,
+            hh_drop_mode=hh_drop_mode,
             lh_hl_scale=lh_hl_scale,
             spatial_sharpen_power=spatial_sharpen_power,
         )
@@ -385,6 +520,34 @@ class TGFSDecoderStageV2(nn.Module):
         x = torch.cat([x, skip], dim=1)
         x = self.fuse(x)
         x = self.tgfs(x, text_pooled=text_pooled, text_tokens=text_tokens, text_mask=text_mask)
+        return x
+
+
+class PlainDecoderStageV2(nn.Module):
+    def __init__(self, in_channels: int, skip_channels: int, out_channels: int, use_attention: bool) -> None:
+        super().__init__()
+        self.reduce = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+        )
+        self.fuse = ConvBlock(out_channels + skip_channels, out_channels)
+        self.freqa = FreqA(out_channels, use_attention=use_attention)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        skip: torch.Tensor,
+        text_pooled: Optional[torch.Tensor] = None,
+        text_tokens: Optional[torch.Tensor] = None,
+        text_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        del text_pooled, text_tokens, text_mask
+        x = F.interpolate(x, size=skip.shape[-2:], mode='bilinear', align_corners=False)
+        x = self.reduce(x)
+        x = torch.cat([x, skip], dim=1)
+        x = self.fuse(x)
+        x = self.freqa(x)
         return x
 
 
@@ -402,19 +565,40 @@ class LFAENetTGFSv2(nn.Module):
         freeze_text_backbone: bool = True,
         use_external_text_encoder: bool = False,
         drop_hh_in_decoder: bool = True,
+        hh_drop_mode: str | None = None,
         low_level_hf_scale: float = 0.6,
         spatial_sharpen_power: float = 2.0,
         use_deep_supervision: bool = False,
+        fusion_mode: str = "decoder",
+        unfreeze_last_n: int = 0,
+        lora_r: int = 0,
     ) -> None:
         super().__init__()
         c1, c2, c3, c4 = channels
+        if fusion_mode not in {"encoder", "decoder", "both"}:
+            raise ValueError(f"Unsupported fusion_mode: {fusion_mode}")
+        if hh_drop_mode is None:
+            hh_drop_mode = "zero" if drop_hh_in_decoder else "keep"
+        if hh_drop_mode not in {"zero", "keep", "learned"}:
+            raise ValueError(f"Unsupported hh_drop_mode: {hh_drop_mode}")
+        self.hh_drop_mode = hh_drop_mode
+        self.fusion_mode = fusion_mode
+        self.encoder_uses_text = fusion_mode in {"encoder", "both"}
+        self.decoder_uses_text = fusion_mode in {"decoder", "both"}
         self.use_external_text_encoder = use_external_text_encoder
         self.text_encoder_type = text_encoder_type
         if not use_external_text_encoder:
             if text_encoder_type == 'simple':
                 self.text_encoder = SimpleTextEncoder(vocab_size=vocab_size, text_dim=text_dim)
             elif text_encoder_type in {'biomedvlp-cxr-bert', 'cxr-bert'}:
-                self.text_encoder = CXRBertTextEncoder(model_dir=text_backbone_path, out_dim=text_dim, freeze=freeze_text_backbone, use_mean_pool=True)
+                self.text_encoder = CXRBertTextEncoder(
+                    model_dir=text_backbone_path,
+                    out_dim=text_dim,
+                    freeze=freeze_text_backbone,
+                    use_mean_pool=True,
+                    unfreeze_last_n=unfreeze_last_n,
+                    lora_r=lora_r,
+                )
             else:
                 raise ValueError(f'Unsupported text_encoder_type: {text_encoder_type}')
         self.stem = nn.Sequential(
@@ -423,51 +607,115 @@ class LFAENetTGFSv2(nn.Module):
             nn.ReLU(inplace=True),
         )
         self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.enc1 = nn.Sequential(ConvBlock(c1, c1), FreqA(c1, use_attention=False))
-        self.enc2 = nn.Sequential(ConvBlock(c1, c2), FreqA(c2, use_attention=False))
-        self.enc3 = nn.Sequential(ConvBlock(c2, c3), FreqA(c3, use_attention=False))
-        self.enc4 = nn.Sequential(ConvBlock(c3, c4), FreqA(c4, use_attention=True))
-        self.bottleneck = nn.Sequential(ConvBlock(c4, bottleneck_channels), FreqA(bottleneck_channels, use_attention=True))
-        self.dec4 = TGFSDecoderStageV2(
-            bottleneck_channels,
-            c4,
-            c4,
-            text_dim=text_dim,
-            use_attention=True,
-            drop_hh=drop_hh_in_decoder,
-            lh_hl_scale=1.0,
-            spatial_sharpen_power=spatial_sharpen_power,
-        )
-        self.dec3 = TGFSDecoderStageV2(
-            c4,
-            c3,
-            c3,
-            text_dim=text_dim,
-            use_attention=True,
-            drop_hh=drop_hh_in_decoder,
-            lh_hl_scale=1.0,
-            spatial_sharpen_power=spatial_sharpen_power,
-        )
-        self.dec2 = TGFSDecoderStageV2(
-            c3,
-            c2,
-            c2,
-            text_dim=text_dim,
-            use_attention=False,
-            drop_hh=drop_hh_in_decoder,
-            lh_hl_scale=low_level_hf_scale,
-            spatial_sharpen_power=spatial_sharpen_power,
-        )
-        self.dec1 = TGFSDecoderStageV2(
-            c2,
-            c1,
-            c1,
-            text_dim=text_dim,
-            use_attention=False,
-            drop_hh=drop_hh_in_decoder,
-            lh_hl_scale=low_level_hf_scale,
-            spatial_sharpen_power=spatial_sharpen_power,
-        )
+        encoder_stage_cls = EncoderStageText if self.encoder_uses_text else EncoderStagePlain
+        decoder_stage_cls = TGFSDecoderStageV2 if self.decoder_uses_text else PlainDecoderStageV2
+        if self.encoder_uses_text:
+            self.enc1 = encoder_stage_cls(
+                c1,
+                c1,
+                text_dim=text_dim,
+                use_attention=False,
+                drop_hh=drop_hh_in_decoder,
+                hh_drop_mode=hh_drop_mode,
+                lh_hl_scale=low_level_hf_scale,
+                spatial_sharpen_power=spatial_sharpen_power,
+            )
+            self.enc2 = encoder_stage_cls(
+                c1,
+                c2,
+                text_dim=text_dim,
+                use_attention=False,
+                drop_hh=drop_hh_in_decoder,
+                hh_drop_mode=hh_drop_mode,
+                lh_hl_scale=low_level_hf_scale,
+                spatial_sharpen_power=spatial_sharpen_power,
+            )
+            self.enc3 = encoder_stage_cls(
+                c2,
+                c3,
+                text_dim=text_dim,
+                use_attention=False,
+                drop_hh=drop_hh_in_decoder,
+                hh_drop_mode=hh_drop_mode,
+                lh_hl_scale=1.0,
+                spatial_sharpen_power=spatial_sharpen_power,
+            )
+            self.enc4 = encoder_stage_cls(
+                c3,
+                c4,
+                text_dim=text_dim,
+                use_attention=True,
+                drop_hh=drop_hh_in_decoder,
+                hh_drop_mode=hh_drop_mode,
+                lh_hl_scale=1.0,
+                spatial_sharpen_power=spatial_sharpen_power,
+            )
+            self.bottleneck = encoder_stage_cls(
+                c4,
+                bottleneck_channels,
+                text_dim=text_dim,
+                use_attention=True,
+                drop_hh=drop_hh_in_decoder,
+                hh_drop_mode=hh_drop_mode,
+                lh_hl_scale=1.0,
+                spatial_sharpen_power=spatial_sharpen_power,
+            )
+        else:
+            self.enc1 = encoder_stage_cls(c1, c1, use_attention=False)
+            self.enc2 = encoder_stage_cls(c1, c2, use_attention=False)
+            self.enc3 = encoder_stage_cls(c2, c3, use_attention=False)
+            self.enc4 = encoder_stage_cls(c3, c4, use_attention=True)
+            self.bottleneck = encoder_stage_cls(c4, bottleneck_channels, use_attention=True)
+        if self.decoder_uses_text:
+            self.dec4 = decoder_stage_cls(
+                bottleneck_channels,
+                c4,
+                c4,
+                text_dim=text_dim,
+                use_attention=True,
+                drop_hh=drop_hh_in_decoder,
+                hh_drop_mode=hh_drop_mode,
+                lh_hl_scale=1.0,
+                spatial_sharpen_power=spatial_sharpen_power,
+            )
+            self.dec3 = decoder_stage_cls(
+                c4,
+                c3,
+                c3,
+                text_dim=text_dim,
+                use_attention=True,
+                drop_hh=drop_hh_in_decoder,
+                hh_drop_mode=hh_drop_mode,
+                lh_hl_scale=1.0,
+                spatial_sharpen_power=spatial_sharpen_power,
+            )
+            self.dec2 = decoder_stage_cls(
+                c3,
+                c2,
+                c2,
+                text_dim=text_dim,
+                use_attention=False,
+                drop_hh=drop_hh_in_decoder,
+                hh_drop_mode=hh_drop_mode,
+                lh_hl_scale=low_level_hf_scale,
+                spatial_sharpen_power=spatial_sharpen_power,
+            )
+            self.dec1 = decoder_stage_cls(
+                c2,
+                c1,
+                c1,
+                text_dim=text_dim,
+                use_attention=False,
+                drop_hh=drop_hh_in_decoder,
+                hh_drop_mode=hh_drop_mode,
+                lh_hl_scale=low_level_hf_scale,
+                spatial_sharpen_power=spatial_sharpen_power,
+            )
+        else:
+            self.dec4 = decoder_stage_cls(bottleneck_channels, c4, c4, use_attention=True)
+            self.dec3 = decoder_stage_cls(c4, c3, c3, use_attention=True)
+            self.dec2 = decoder_stage_cls(c3, c2, c2, use_attention=False)
+            self.dec1 = decoder_stage_cls(c2, c1, c1, use_attention=False)
         self.final_refine = ConvBlock(c1, c1)
         self.use_deep_supervision = use_deep_supervision
         if use_deep_supervision:
@@ -477,17 +725,16 @@ class LFAENetTGFSv2(nn.Module):
         self.head = nn.Conv2d(c1, num_classes, kernel_size=1)
 
     def set_debug_capture(self, enabled: bool = True) -> None:
-        self.dec4.tgfs.capture_debug = enabled
-        self.dec3.tgfs.capture_debug = enabled
-        self.dec2.tgfs.capture_debug = enabled
-        self.dec1.tgfs.capture_debug = enabled
+        for stage in (self.dec4, self.dec3, self.dec2, self.dec1):
+            if hasattr(stage, "tgfs"):
+                stage.tgfs.capture_debug = enabled
 
     def get_debug_outputs(self) -> dict[str, Optional[dict[str, torch.Tensor]]]:
         return {
-            "dec4": self.dec4.tgfs.last_debug,
-            "dec3": self.dec3.tgfs.last_debug,
-            "dec2": self.dec2.tgfs.last_debug,
-            "dec1": self.dec1.tgfs.last_debug,
+            "dec4": getattr(getattr(self.dec4, "tgfs", None), "last_debug", None),
+            "dec3": getattr(getattr(self.dec3, "tgfs", None), "last_debug", None),
+            "dec2": getattr(getattr(self.dec2, "tgfs", None), "last_debug", None),
+            "dec1": getattr(getattr(self.dec1, "tgfs", None), "last_debug", None),
         }
 
     def _encode_text(self, token_ids: Optional[torch.Tensor], attention_mask: Optional[torch.Tensor], text_features: Optional[torch.Tensor]):
@@ -511,15 +758,15 @@ class LFAENetTGFSv2(nn.Module):
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
         text_tokens, text_pooled = self._encode_text(token_ids=token_ids, attention_mask=attention_mask, text_features=text_features)
         x0 = self.stem(image)
-        e1 = self.enc1(x0)
+        e1 = self.enc1(x0, text_pooled, text_tokens, attention_mask)
         x1 = self.pool(e1)
-        e2 = self.enc2(x1)
+        e2 = self.enc2(x1, text_pooled, text_tokens, attention_mask)
         x2 = self.pool(e2)
-        e3 = self.enc3(x2)
+        e3 = self.enc3(x2, text_pooled, text_tokens, attention_mask)
         x3 = self.pool(e3)
-        e4 = self.enc4(x3)
+        e4 = self.enc4(x3, text_pooled, text_tokens, attention_mask)
         x4 = self.pool(e4)
-        b = self.bottleneck(x4)
+        b = self.bottleneck(x4, text_pooled, text_tokens, attention_mask)
         d4 = self.dec4(b, e4, text_pooled, text_tokens, attention_mask)
         d3 = self.dec3(d4, e3, text_pooled, text_tokens, attention_mask)
         d2 = self.dec2(d3, e2, text_pooled, text_tokens, attention_mask)

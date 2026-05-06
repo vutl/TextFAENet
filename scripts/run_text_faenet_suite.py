@@ -56,10 +56,22 @@ def build_command(common_args: argparse.Namespace, dataset_cfg: dict[str, str]) 
         str(common_args.max_pos_weight),
         "--metric-thresholds",
         common_args.metric_thresholds,
+        "--prompt-mode",
+        common_args.prompt_mode,
         "--cxr-bert-dir",
         common_args.cxr_bert_dir,
         "--text-dim",
         str(common_args.text_dim),
+        "--fusion-mode",
+        common_args.fusion_mode,
+        "--hh-drop-mode",
+        common_args.hh_drop_mode,
+        "--unfreeze-last-n",
+        str(common_args.unfreeze_last_n),
+        "--lora-r",
+        str(common_args.lora_r),
+        "--grad-accum-steps",
+        str(common_args.grad_accum_steps),
         "--vocab-size",
         str(common_args.vocab_size),
         "--aux-w-d4",
@@ -74,18 +86,24 @@ def build_command(common_args: argparse.Namespace, dataset_cfg: dict[str, str]) 
         str(common_args.spatial_sharpen_power),
     ]
 
-    if common_args.use_cxr_bert:
-        cmd.append("--use-cxr-bert")
-    if common_args.freeze_text_backbone:
-        cmd.append("--freeze-text-backbone")
-    if common_args.drop_hh_in_decoder:
-        cmd.append("--drop-hh-in-decoder")
-    else:
-        cmd.append("--no-drop-hh-in-decoder")
+    cmd.append("--use-cxr-bert" if common_args.use_cxr_bert else "--no-use-cxr-bert")
+    cmd.append("--freeze-text-backbone" if common_args.freeze_text_backbone else "--no-freeze-text-backbone")
     if common_args.use_deep_supervision:
         cmd.append("--use-deep-supervision")
     else:
         cmd.append("--no-use-deep-supervision")
+    if common_args.use_amp:
+        cmd.append("--use-amp")
+    else:
+        cmd.append("--no-use-amp")
+    if common_args.save_debug_vis:
+        cmd.extend(["--save-debug-vis", "--debug-vis-samples", str(common_args.debug_vis_samples)])
+    else:
+        cmd.append("--no-save-debug-vis")
+
+    last_ckpt = Path(dataset_cfg["save_dir"]) / "last.pt"
+    if common_args.resume_existing and last_ckpt.exists():
+        cmd.extend(["--resume-ckpt", str(last_ckpt)])
 
     return cmd
 
@@ -98,10 +116,12 @@ def main() -> None:
         choices=["lfaenet_tgfs", "lfaenet_tgfs_v2"],
         default="lfaenet_tgfs_v2",
     )
+    parser.add_argument("--run-suffix", type=str, default="_fix")
+    parser.add_argument("--resume-existing", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--early-stop-patience", type=int, default=8)
     parser.add_argument("--batch-size", type=int, default=8)
-    parser.add_argument("--num-workers", type=int, default=2)
+    parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--optimizer", type=str, choices=["adamw", "sgd"], default="adamw")
     parser.add_argument("--lr", type=float, default=3e-4)
@@ -114,39 +134,69 @@ def main() -> None:
     parser.add_argument("--dice-weight", type=float, default=0.7)
     parser.add_argument("--pos-weight", type=str, default="auto")
     parser.add_argument("--max-pos-weight", type=float, default=64.0)
-    parser.add_argument("--metric-thresholds", type=str, default="0.2,0.3,0.4,0.5")
-    parser.add_argument("--use-cxr-bert", action="store_true", default=True)
-    parser.add_argument("--freeze-text-backbone", action="store_true", default=True)
+    parser.add_argument("--metric-thresholds", type=str, default="0.35,0.40,0.45,0.50,0.55")
+    parser.add_argument(
+        "--prompt-mode",
+        type=str,
+        choices=["native", "canonical", "generic", "lesion", "empty", "shuffle"],
+        default="native",
+    )
+    parser.add_argument("--use-cxr-bert", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--freeze-text-backbone", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--unfreeze-last-n", type=int, default=0)
+    parser.add_argument("--lora-r", type=int, default=0)
     parser.add_argument("--cxr-bert-dir", type=str, default="BiomedVLP-CXR-BERT-specialized")
     parser.add_argument("--drop-hh-in-decoder", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--hh-drop-mode", type=str, choices=["zero", "keep", "learned"], default=None)
+    parser.add_argument("--fusion-mode", type=str, choices=["encoder", "decoder", "both"], default="decoder")
     parser.add_argument("--text-dim", type=int, default=256)
     parser.add_argument("--vocab-size", type=int, default=30522)
-    parser.add_argument("--use-deep-supervision", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--use-deep-supervision", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--use-amp", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--grad-accum-steps", type=int, default=1)
+    parser.add_argument("--save-debug-vis", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--debug-vis-samples", type=int, default=8)
     parser.add_argument("--aux-w-d4", type=float, default=0.4)
     parser.add_argument("--aux-w-d3", type=float, default=0.6)
     parser.add_argument("--aux-w-d2", type=float, default=0.8)
     parser.add_argument("--low-level-hf-scale", type=float, default=0.6)
     parser.add_argument("--spatial-sharpen-power", type=float, default=2.0)
     args = parser.parse_args()
+    args.grad_accum_steps = max(1, int(args.grad_accum_steps))
+    args.unfreeze_last_n = max(0, int(args.unfreeze_last_n))
+    args.lora_r = max(0, int(args.lora_r))
+    args.debug_vis_samples = max(1, int(args.debug_vis_samples))
+    if args.hh_drop_mode is None:
+        args.hh_drop_mode = "zero" if args.drop_hh_in_decoder else "keep"
+    else:
+        args.drop_hh_in_decoder = args.hh_drop_mode == "zero"
+    if args.model_type != "lfaenet_tgfs_v2" and args.hh_drop_mode == "learned":
+        raise ValueError("--hh-drop-mode learned is only implemented for --model-type lfaenet_tgfs_v2")
+    if args.model_type != "lfaenet_tgfs_v2" and (args.unfreeze_last_n > 0 or args.lora_r > 0):
+        raise ValueError("--unfreeze-last-n and --lora-r are only implemented for --model-type lfaenet_tgfs_v2")
+    if not args.use_cxr_bert and (args.unfreeze_last_n > 0 or args.lora_r > 0):
+        raise ValueError("--unfreeze-last-n/--lora-r require --use-cxr-bert")
+    if args.spatial_sharpen_power <= 0:
+        raise ValueError("--spatial-sharpen-power must be positive")
 
     dataset_sequence = [
         {
             "name": "mosmed",
             "data_root": str(ROOT / "datasets" / "MosMed"),
             "dataset_format": "text_csv",
-            "save_dir": str(ROOT / "runs" / "mosmed_text_faenet_v2_suite"),
+            "save_dir": str(ROOT / "runs" / f"mosmed_text_faenet_v2_suite{args.run_suffix}"),
         },
         {
             "name": "brain_tumors",
             "data_root": str(ROOT / "datasets" / "brain_tumors"),
             "dataset_format": "prompt_folder",
-            "save_dir": str(ROOT / "runs" / "brain_tumors_text_faenet_v2_suite"),
+            "save_dir": str(ROOT / "runs" / f"brain_tumors_text_faenet_v2_suite{args.run_suffix}"),
         },
         {
             "name": "breast_tumors",
             "data_root": str(ROOT / "datasets" / "breast_tumors"),
             "dataset_format": "prompt_folder",
-            "save_dir": str(ROOT / "runs" / "breast_tumors_text_faenet_v2_suite"),
+            "save_dir": str(ROOT / "runs" / f"breast_tumors_text_faenet_v2_suite{args.run_suffix}"),
         },
     ]
 
