@@ -752,8 +752,8 @@ def main() -> None:
         if "best_threshold" in ckpt:
             best_threshold = float(ckpt["best_threshold"])
 
-    end_epoch = start_epoch + args.epochs - 1
-    total_phase_epochs = max(args.epochs, 1)
+    end_epoch = args.epochs
+    total_phase_epochs = max(end_epoch - start_epoch + 1, 1)
 
     for epoch in range(start_epoch, end_epoch + 1):
         phase_epoch = epoch - start_epoch

@@ -1,0 +1,46 @@
+[
+  {
+    "case_id": 1,
+    "index": 47,
+    "mask_name": "mask_sub-S09313_ses-E16120_run-1_bp-chest_vp-ap_dx.png",
+    "gt_area": 0.14654415845870972,
+    "native_dice": 0.8434237995926785,
+    "empty_dice": 1.359989119902082e-10,
+    "shuffle_dice": 0.23299808438302227,
+    "native_prompt": "Bilateral pulmonary infection, two infected areas, upper middle lower left lung and middle lower right lung.",
+    "shuffle_prompt": "Unilateral pulmonary infection, one infected area, lower right lung."
+  },
+  {
+    "case_id": 2,
+    "index": 35,
+    "mask_name": "mask_sub-S09310_ses-E24865_run-1_bp-chest_vp-ap_dx.png",
+    "gt_area": 0.009367028251290321,
+    "native_dice": 0.6463798534665479,
+    "empty_dice": 2.12765956994115e-09,
+    "shuffle_dice": 1.42450142247222e-09,
+    "native_prompt": "Unilateral pulmonary infection, one infected area, middle left lung.",
+    "shuffle_prompt": "Unilateral pulmonary infection, one infected area, lower right lung."
+  },
+  {
+    "case_id": 3,
+    "index": 6,
+    "mask_name": "mask_sub-S08047_ses-E17682_run-1_bp-chest_vp-ap_dx.png",
+    "gt_area": 0.2068917453289032,
+    "native_dice": 0.976753177711239,
+    "empty_dice": 9.632983334010886e-11,
+    "shuffle_dice": 0.9085976627760539,
+    "native_prompt": "Bilateral pulmonary infection, two infected areas, all left lung and all right lung.",
+    "shuffle_prompt": "Bilateral pulmonary infection, two infected areas, upper middle lower left lung and upper middle lower right lung."
+  },
+  {
+    "case_id": 4,
+    "index": 16,
+    "mask_name": "mask_sub-S08489_ses-E22906_run-1_bp-chest_vp-ap_dx.png",
+    "gt_area": 0.10006776452064514,
+    "native_dice": 0.859219230423999,
+    "empty_dice": 1.991635132047075e-10,
+    "shuffle_dice": 0.7797447509444426,
+    "native_prompt": "Bilateral pulmonary infection, two infected areas, lower left lung and middle lower right lung.",
+    "shuffle_prompt": "Bilateral pulmonary infection, two infected areas, middle lower left lung and upper middle lower right lung."
+  }
+]

@@ -26,9 +26,27 @@ VARIANTS: dict[str, dict[str, str | int | bool]] = {
         "hh_drop_mode": "keep",
         "fusion_mode": "decoder",
     },
+    "simple_native_keep_encoder": {
+        "use_cxr_bert": False,
+        "prompt_mode": "native",
+        "hh_drop_mode": "keep",
+        "fusion_mode": "encoder",
+    },
     "simple_native_keep_both": {
         "use_cxr_bert": False,
         "prompt_mode": "native",
+        "hh_drop_mode": "keep",
+        "fusion_mode": "both",
+    },
+    "simple_empty_keep_both": {
+        "use_cxr_bert": False,
+        "prompt_mode": "empty",
+        "hh_drop_mode": "keep",
+        "fusion_mode": "both",
+    },
+    "simple_shuffle_keep_both": {
+        "use_cxr_bert": False,
+        "prompt_mode": "shuffle",
         "hh_drop_mode": "keep",
         "fusion_mode": "both",
     },
@@ -43,6 +61,22 @@ VARIANTS: dict[str, dict[str, str | int | bool]] = {
         "prompt_mode": "generic",
         "hh_drop_mode": "keep",
         "fusion_mode": "both",
+    },
+    "simple_native_zero_both": {
+        "use_cxr_bert": False,
+        "prompt_mode": "native",
+        "hh_drop_mode": "zero",
+        "fusion_mode": "both",
+    },
+    "simple_native_learned_both": {
+        "use_cxr_bert": False,
+        "prompt_mode": "native",
+        "hh_drop_mode": "learned",
+        "fusion_mode": "both",
+    },
+    "faenet_visual_clean": {
+        "model_type": "faenet",
+        "no_text": True,
     },
     "cxr_frozen_zero_decoder": {
         "use_cxr_bert": True,
@@ -102,6 +136,12 @@ def quote_cmd(cmd: list[str]) -> str:
 
 
 def add_variant_flags(cmd: list[str], variant: dict[str, str | int | bool]) -> list[str]:
+    if variant.get("model_type") == "faenet":
+        if bool(variant.get("no_text", True)):
+            cmd.append("--no-text")
+        cmd.append("--no-use-cxr-bert")
+        return cmd
+
     use_cxr_bert = bool(variant.get("use_cxr_bert", True))
     cmd.append("--use-cxr-bert" if use_cxr_bert else "--no-use-cxr-bert")
     cmd.extend(["--prompt-mode", str(variant.get("prompt_mode", "native"))])
@@ -124,7 +164,7 @@ def qata_cmd(args: argparse.Namespace, variant_name: str, variant: dict[str, str
         "--save-dir",
         str(save_dir),
         "--model-type",
-        "lfaenet_tgfs_v2",
+        str(variant.get("model_type", "lfaenet_tgfs_v2")),
         "--epochs",
         str(args.qata_epochs),
         "--batch-size",
@@ -175,7 +215,7 @@ def mosmed_cmd(args: argparse.Namespace, variant_name: str, variant: dict[str, s
         "--save-dir",
         str(save_dir),
         "--model-type",
-        "lfaenet_tgfs_v2",
+        str(variant.get("model_type", "lfaenet_tgfs_v2")),
         "--epochs",
         str(args.mosmed_epochs),
         "--batch-size",
