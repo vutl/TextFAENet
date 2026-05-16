@@ -26,11 +26,23 @@ VARIANTS: dict[str, dict[str, str | int | bool]] = {
         "hh_drop_mode": "keep",
         "fusion_mode": "decoder",
     },
+    "simple_native_keep_both": {
+        "use_cxr_bert": False,
+        "prompt_mode": "native",
+        "hh_drop_mode": "keep",
+        "fusion_mode": "both",
+    },
     "simple_generic_keep_decoder": {
         "use_cxr_bert": False,
         "prompt_mode": "generic",
         "hh_drop_mode": "keep",
         "fusion_mode": "decoder",
+    },
+    "simple_generic_keep_both": {
+        "use_cxr_bert": False,
+        "prompt_mode": "generic",
+        "hh_drop_mode": "keep",
+        "fusion_mode": "both",
     },
     "cxr_frozen_zero_decoder": {
         "use_cxr_bert": True,
@@ -48,6 +60,24 @@ VARIANTS: dict[str, dict[str, str | int | bool]] = {
         "use_cxr_bert": True,
         "prompt_mode": "native",
         "hh_drop_mode": "keep",
+        "fusion_mode": "both",
+    },
+    "cxr_frozen_keep_both_empty": {
+        "use_cxr_bert": True,
+        "prompt_mode": "empty",
+        "hh_drop_mode": "keep",
+        "fusion_mode": "both",
+    },
+    "cxr_frozen_keep_both_shuffle": {
+        "use_cxr_bert": True,
+        "prompt_mode": "shuffle",
+        "hh_drop_mode": "keep",
+        "fusion_mode": "both",
+    },
+    "cxr_frozen_learned_both": {
+        "use_cxr_bert": True,
+        "prompt_mode": "native",
+        "hh_drop_mode": "learned",
         "fusion_mode": "both",
     },
     "cxr_lora8_keep_both": {
@@ -87,6 +117,7 @@ def qata_cmd(args: argparse.Namespace, variant_name: str, variant: dict[str, str
     save_dir = ROOT / "runs" / f"{args.run_prefix}_qata_{variant_name}_seed{seed}"
     cmd = [
         sys.executable,
+        "-u",
         str(TRAIN_QATA),
         "--data-root",
         args.qata_data_root,
@@ -95,7 +126,7 @@ def qata_cmd(args: argparse.Namespace, variant_name: str, variant: dict[str, str
         "--model-type",
         "lfaenet_tgfs_v2",
         "--epochs",
-        str(args.epochs),
+        str(args.qata_epochs),
         "--batch-size",
         str(args.qata_batch_size),
         "--num-workers",
@@ -112,6 +143,8 @@ def qata_cmd(args: argparse.Namespace, variant_name: str, variant: dict[str, str
         "1e-4",
         "--seed",
         str(seed),
+        "--early-stop-patience",
+        str(args.qata_early_stop_patience),
         "--metric-thresholds",
         THRESHOLDS,
         "--save-last-every",
@@ -133,6 +166,7 @@ def mosmed_cmd(args: argparse.Namespace, variant_name: str, variant: dict[str, s
     save_dir = ROOT / "runs" / f"{args.run_prefix}_mosmed_{variant_name}_seed{seed}"
     cmd = [
         sys.executable,
+        "-u",
         str(TRAIN_MOSMED),
         "--data-root",
         str(args.mosmed_data_root),
@@ -143,7 +177,7 @@ def mosmed_cmd(args: argparse.Namespace, variant_name: str, variant: dict[str, s
         "--model-type",
         "lfaenet_tgfs_v2",
         "--epochs",
-        str(args.epochs),
+        str(args.mosmed_epochs),
         "--batch-size",
         str(args.mosmed_batch_size),
         "--num-workers",
@@ -273,6 +307,8 @@ def main() -> None:
     parser.add_argument("--variants", nargs="+", choices=sorted(VARIANTS), default=sorted(VARIANTS))
     parser.add_argument("--run-prefix", type=str, default="screening")
     parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--qata-epochs", type=int, default=None)
+    parser.add_argument("--mosmed-epochs", type=int, default=None)
     parser.add_argument("--qata-batch-size", type=int, default=4)
     parser.add_argument("--mosmed-batch-size", type=int, default=8)
     parser.add_argument("--num-workers", type=int, default=4)
@@ -280,6 +316,7 @@ def main() -> None:
     parser.add_argument("--qata-lr", type=float, default=0.02)
     parser.add_argument("--mosmed-lr", type=float, default=3e-4)
     parser.add_argument("--early-stop-patience", type=int, default=8)
+    parser.add_argument("--qata-early-stop-patience", type=int, default=8)
     parser.add_argument("--save-last-every", type=int, default=5)
     parser.add_argument("--resume-existing", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--qata-use-amp", action=argparse.BooleanOptionalAction, default=True)
@@ -297,9 +334,12 @@ def main() -> None:
     parser.add_argument("--qata-data-root", type=str, default=QATA_ROOT)
     parser.add_argument("--mosmed-data-root", type=Path, default=MOSMED_ROOT)
     args = parser.parse_args()
+    args.qata_epochs = args.epochs if args.qata_epochs is None else args.qata_epochs
+    args.mosmed_epochs = args.epochs if args.mosmed_epochs is None else args.mosmed_epochs
 
     seeds = [42] if args.plan == "screening" else [42, 3407, 2026]
     env = os.environ.copy()
+    env.setdefault("PYTHONUNBUFFERED", "1")
     hf_home = ROOT / ".hf_cache"
     if hf_home.exists():
         env.setdefault("HF_HOME", str(hf_home))

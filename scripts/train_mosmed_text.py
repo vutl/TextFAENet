@@ -913,7 +913,7 @@ def main() -> None:
                 f"val_pred_pos={row['val_pred_pos_ratio']:.6f} val_gt_pos={row['val_gt_pos_ratio']:.6f} "
                 f"val_thr={row['val_threshold']:.2f}"
             )
-            print(line)
+            print(line, flush=True)
             append_log_line(txt_log_path, line)
 
             should_save_last = (epoch == end_epoch) or ((epoch - start_epoch) % args.save_last_every == 0)
@@ -967,7 +967,8 @@ def main() -> None:
                 print(
                     f"Early stopping at epoch {epoch}: "
                     f"no improvement for {no_improve_epochs} epochs "
-                    f"(best_dice={best_dice:.4f}, best_threshold={best_threshold:.2f})"
+                    f"(best_dice={best_dice:.4f}, best_threshold={best_threshold:.2f})",
+                    flush=True,
                 )
                 break
     else:
@@ -1011,7 +1012,7 @@ def main() -> None:
     )
     append_log_line(txt_log_path, json.dumps(summary, ensure_ascii=False))
     save_debug_outputs(model, test_loader, device, args)
-    print(f"Training complete. Final test: {summary}")
+    print(f"Training complete. Final test: {summary}", flush=True)
 
 
 if __name__ == "__main__":

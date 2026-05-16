@@ -801,7 +801,8 @@ def main() -> None:
             f"lr={lr:.6f} "
             f"train: loss={row['train_loss']:.4f} iou={row['train_iou']:.4f} dice={row['train_dice']:.4f} | "
             f"val: loss={row['val_loss']:.4f} iou={row['val_iou']:.4f} dice={row['val_dice']:.4f} "
-            f"thr={row['val_threshold']:.2f}"
+            f"thr={row['val_threshold']:.2f}",
+            flush=True,
         )
         append_log_line(
             txt_log_path,
@@ -851,11 +852,12 @@ def main() -> None:
             print(
                 f"Early stopping at epoch {epoch}: "
                 f"no improvement for {no_improve_epochs} epochs "
-                f"(best_dice={best_dice:.4f}, best_threshold={best_threshold:.2f})"
+                f"(best_dice={best_dice:.4f}, best_threshold={best_threshold:.2f})",
+                flush=True,
             )
             break
 
-    print(f"Training done. Best val dice: {best_dice:.4f} at threshold={best_threshold:.2f}")
+    print(f"Training done. Best val dice: {best_dice:.4f} at threshold={best_threshold:.2f}", flush=True)
 
     best_ckpt = save_dir / "best.pt"
     if best_ckpt.exists():
@@ -888,7 +890,7 @@ def main() -> None:
             f"test_iou={test_stats['iou']:.6f} "
             f"test_dice={test_stats['dice']:.6f}"
         )
-        print(f"Final test with best checkpoint: {test_summary}")
+        print(f"Final test with best checkpoint: {test_summary}", flush=True)
         final_test_txt_path.write_text(test_summary + "\n", encoding="utf-8")
         append_log_line(txt_log_path, test_summary)
         (save_dir / "final_test.json").write_text(json.dumps(test_stats, indent=2), encoding="utf-8")
