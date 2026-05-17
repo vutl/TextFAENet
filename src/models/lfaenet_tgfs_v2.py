@@ -388,11 +388,22 @@ class TGFSBlockV2(nn.Module):
         k = self.text_k(text_tokens)
         v = self.text_v(text_tokens)
         attn = torch.bmm(q, k.transpose(1, 2)) / (q.shape[-1] ** 0.5)
+        no_valid_token = None
         if attention_mask is not None:
-            attn = attn.masked_fill(~attention_mask.bool().unsqueeze(1), float('-inf'))
+            valid_tokens = attention_mask.bool()
+            no_valid_token = ~valid_tokens.any(dim=1)
+            if no_valid_token.any():
+                # Empty-prompt ablations intentionally remove text. Avoid
+                # softmax over all -inf and use a neutral spatial mask instead.
+                valid_tokens = valid_tokens.clone()
+                valid_tokens[no_valid_token] = True
+            attn = attn.masked_fill(~valid_tokens.unsqueeze(1), float('-inf'))
         attn = torch.softmax(attn, dim=-1)
         grounded = torch.bmm(attn, v).transpose(1, 2).reshape(b, self.channels, h, w)
         spatial = torch.sigmoid(self.spatial_gate_proj(grounded))
+        if no_valid_token is not None and no_valid_token.any():
+            spatial = spatial.clone()
+            spatial[no_valid_token] = 1.0
         return spatial
 
     def forward(self, x: torch.Tensor, text_pooled: torch.Tensor, text_tokens: torch.Tensor, text_mask: Optional[torch.Tensor] = None):
