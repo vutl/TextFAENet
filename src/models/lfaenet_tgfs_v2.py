@@ -17,10 +17,6 @@ This version adds:
 Expected use:
 - replace your current lfaenet_tgfs.py with this file
 - keep train_qata.py mostly unchanged, because it already passes token_ids + attention_mask
-
-Note:
-- this file is intentionally self-contained
-- it does not depend on src.modules.blocks
 """
 
 from pathlib import Path
@@ -31,27 +27,56 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+def make_norm(channels: int, norm_type: str = "bn", num_groups: int = 8) -> nn.Module:
+    if norm_type == "gn":
+        groups = max(1, min(num_groups, channels))
+        while channels % groups != 0 and groups > 1:
+            groups -= 1
+        return nn.GroupNorm(groups, channels)
+    if norm_type == "bn":
+        return nn.BatchNorm2d(channels)
+    raise ValueError(f"Unsupported norm_type: {norm_type}")
+
+
 class ConvBlock(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int) -> None:
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        norm_type: str = "bn",
+        depth: int = 2,
+        dropout_p: float = 0.0,
+    ) -> None:
         super().__init__()
+        if depth not in {2, 3}:
+            raise ValueError(f"ConvBlock depth must be 2 or 3, got {depth}")
+        self.depth = depth
         self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.bn1 = make_norm(out_channels, norm_type)
         self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(out_channels)
+        self.bn2 = make_norm(out_channels, norm_type)
+        if depth == 3:
+            self.conv3 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False)
+            self.bn3 = make_norm(out_channels, norm_type)
         self.act = nn.ReLU(inplace=True)
+        self.dropout = nn.Dropout2d(p=dropout_p) if dropout_p > 0 else nn.Identity()
         self.skip = None
         if in_channels != out_channels:
             self.skip = nn.Sequential(
                 nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False),
-                nn.BatchNorm2d(out_channels),
+                make_norm(out_channels, norm_type),
             )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         identity = x if self.skip is None else self.skip(x)
         x = self.act(self.bn1(self.conv1(x)))
-        x = self.bn2(self.conv2(x))
+        if self.depth == 3:
+            x = self.act(self.bn2(self.conv2(x)))
+            x = self.bn3(self.conv3(x))
+        else:
+            x = self.bn2(self.conv2(x))
         x = self.act(x + identity)
-        return x
+        return self.dropout(x)
 
 
 class SpatialSelfAttention2D(nn.Module):
@@ -66,13 +91,97 @@ class SpatialSelfAttention2D(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         b, c, h, w = x.shape
-        q = self.q(x).flatten(2).transpose(1, 2)
-        k = self.k(x).flatten(2)
-        v = self.v(x).flatten(2).transpose(1, 2)
+        q = self.q(x).flatten(2).transpose(1, 2).contiguous()
+        k = self.k(x).flatten(2).contiguous()
+        v = self.v(x).flatten(2).transpose(1, 2).contiguous()
         attn = torch.softmax(torch.bmm(q, k) / (q.shape[-1] ** 0.5), dim=-1)
-        out = torch.bmm(attn, v).transpose(1, 2).reshape(b, c, h, w)
+        out = torch.bmm(attn, v).transpose(1, 2).contiguous().reshape(b, c, h, w)
         out = self.proj(out)
         return x + self.gamma * out
+
+
+class LoRALinear(nn.Module):
+    def __init__(self, base: nn.Linear, r: int, alpha: float) -> None:
+        super().__init__()
+        if r <= 0:
+            raise ValueError("LoRA rank r must be > 0")
+        self.base = base
+        self.r = int(r)
+        self.scaling = float(alpha) / float(r)
+        self.lora_a = nn.Parameter(torch.zeros(self.r, base.in_features))
+        self.lora_b = nn.Parameter(torch.zeros(base.out_features, self.r))
+        nn.init.kaiming_uniform_(self.lora_a, a=5**0.5)
+        nn.init.zeros_(self.lora_b)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        base_out = self.base(x)
+        delta = (x @ self.lora_a.t()) @ self.lora_b.t()
+        return base_out + delta * self.scaling
+
+
+def apply_lora_to_backbone(module: nn.Module, r: int, alpha: float) -> int:
+    target_keys = ("query", "key", "value", "q_proj", "k_proj", "v_proj")
+    count = 0
+
+    def _walk(parent: nn.Module) -> None:
+        nonlocal count
+        for name, child in list(parent.named_children()):
+            lname = name.lower()
+            if isinstance(child, nn.Linear) and any(k in lname for k in target_keys):
+                setattr(parent, name, LoRALinear(child, r=r, alpha=alpha))
+                count += 1
+            else:
+                _walk(child)
+
+    _walk(module)
+    return count
+
+
+class TextFiLM2D(nn.Module):
+    def __init__(self, channels: int, text_dim: int) -> None:
+        super().__init__()
+        self.proj = nn.Linear(text_dim, channels * 2)
+        nn.init.zeros_(self.proj.weight)
+        nn.init.zeros_(self.proj.bias)
+
+    def forward(self, x: torch.Tensor, text_vec: torch.Tensor) -> torch.Tensor:
+        b, c, _, _ = x.shape
+        beta, gamma = torch.chunk(self.proj(text_vec), 2, dim=1)
+        scale = (1.0 + 0.1 * torch.tanh(gamma)).reshape(b, c, 1, 1)
+        shift = (0.1 * torch.tanh(beta)).reshape(b, c, 1, 1)
+        return x * scale + shift
+
+
+class SpatialTextFusion(nn.Module):
+    def __init__(self, channels: int, text_dim: int, norm_type: str = "bn") -> None:
+        super().__init__()
+        self.channels = channels
+        self.text_k = nn.Linear(text_dim, channels)
+        self.text_v = nn.Linear(text_dim, channels)
+        self.vis_q = nn.Conv2d(channels, channels, kernel_size=1, bias=False)
+        self.spatial_gate_proj = nn.Sequential(
+            nn.Conv2d(channels, channels, kernel_size=1, bias=False),
+            make_norm(channels, norm_type),
+            nn.GELU(),
+            nn.Conv2d(channels, channels, kernel_size=1, bias=True),
+        )
+        nn.init.zeros_(self.spatial_gate_proj[-1].weight)
+        nn.init.zeros_(self.spatial_gate_proj[-1].bias)
+
+    def forward(self, x: torch.Tensor, text_tokens: torch.Tensor, text_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        b, c, h, w = x.shape
+        q = self.vis_q(x).flatten(2).transpose(1, 2).contiguous()
+        k = self.text_k(text_tokens)
+        v = self.text_v(text_tokens)
+        
+        attn = torch.bmm(q, k.transpose(1, 2).contiguous()) / (self.channels ** 0.5)
+        if text_mask is not None:
+            attn = attn.masked_fill(~text_mask.bool().unsqueeze(1), float('-inf'))
+        attn = torch.softmax(attn, dim=-1)
+        
+        grounded = torch.bmm(attn, v).transpose(1, 2).contiguous().reshape(b, self.channels, h, w)
+        gate = self.spatial_gate_proj(grounded)
+        return x * (1.0 + 0.1 * torch.tanh(gate))
 
 
 def haar_dwt2d(x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -88,16 +197,22 @@ def haar_dwt2d(x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tenso
 
 
 def haar_idwt2d(ll: torch.Tensor, lh: torch.Tensor, hl: torch.Tensor, hh: torch.Tensor) -> torch.Tensor:
+    # MPS-compatible: use stack+permute+reshape instead of scatter assignment.
+    # Equivalent to placing x00,x01,x10,x11 at even/odd pixel positions.
     b, c, h, w = ll.shape
-    x00 = (ll + lh + hl + hh) * 0.5
-    x01 = (ll - lh + hl - hh) * 0.5
-    x10 = (ll + lh - hl - hh) * 0.5
-    x11 = (ll - lh - hl + hh) * 0.5
-    out = torch.zeros((b, c, h * 2, w * 2), device=ll.device, dtype=ll.dtype)
-    out[:, :, 0::2, 0::2] = x00
-    out[:, :, 0::2, 1::2] = x01
-    out[:, :, 1::2, 0::2] = x10
-    out[:, :, 1::2, 1::2] = x11
+    x00 = (ll + lh + hl + hh) * 0.5   # even row, even col
+    x01 = (ll - lh + hl - hh) * 0.5   # even row, odd  col
+    x10 = (ll + lh - hl - hh) * 0.5   # odd  row, even col
+    x11 = (ll - lh - hl + hh) * 0.5   # odd  row, odd  col
+    # Stack along a new dim → (b, c, h, w, 4) then rearrange to (b, c, 2h, 2w)
+    # row-interleave: stack x0_, x1_ along axis=3 → (b,c,h,2,w) → ...
+    top = torch.stack([x00, x01], dim=4)   # (b, c, h, w, 2)  → even row: [col0 col1]
+    bot = torch.stack([x10, x11], dim=4)   # (b, c, h, w, 2)  → odd  row
+    # top/bot: (b, c, h, w, 2) → reshape to (b, c, h, 2w)
+    top = top.reshape(b, c, h, w * 2)
+    bot = bot.reshape(b, c, h, w * 2)
+    # interleave rows: stack along dim=3 → (b,c,h,2,2w) → (b,c,2h,2w)
+    out = torch.stack([top, bot], dim=3).reshape(b, c, h * 2, w * 2)
     return out
 
 
@@ -114,7 +229,7 @@ class ICCA(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         b, c, _, _ = x.shape
         z = x.mean(dim=(2, 3))
-        a = torch.sigmoid(self.mlp(z)).view(b, c, 1, 1)
+        a = torch.sigmoid(self.mlp(z)).reshape(b, c, 1, 1)
         return x * a
 
 
@@ -137,16 +252,22 @@ class CCCA(nn.Module):
             hh.mean(dim=(2, 3)),
         ], dim=1)
         w = torch.sigmoid(self.mix(g))
-        w_ll, w_lh, w_hl, w_hh = torch.chunk(w, 4, dim=1)
-        ll = ll * w_ll.view(b, c, 1, 1)
-        lh = lh * w_lh.view(b, c, 1, 1)
-        hl = hl * w_hl.view(b, c, 1, 1)
-        hh = hh * w_hh.view(b, c, 1, 1)
+        w_ll, w_lh, w_hl, w_hh = [t.contiguous() for t in torch.chunk(w, 4, dim=1)]
+        ll = ll * w_ll.reshape(b, c, 1, 1)
+        lh = lh * w_lh.reshape(b, c, 1, 1)
+        hl = hl * w_hl.reshape(b, c, 1, 1)
+        hh = hh * w_hh.reshape(b, c, 1, 1)
         return ll, lh, hl, hh
 
 
 class FreqA(nn.Module):
-    def __init__(self, channels: int, use_attention: bool = False) -> None:
+    def __init__(
+        self,
+        channels: int,
+        use_attention: bool = False,
+        norm_type: str = "bn",
+        dropout_p: float = 0.0,
+    ) -> None:
         super().__init__()
         self.icca_ll = ICCA(channels)
         self.icca_lh = ICCA(channels)
@@ -155,13 +276,14 @@ class FreqA(nn.Module):
         self.ccca = CCCA(channels)
         self.mix = nn.Sequential(
             nn.Conv2d(channels * 4, channels * 4, kernel_size=3, padding=1, groups=4, bias=False),
-            nn.BatchNorm2d(channels * 4),
+            make_norm(channels * 4, norm_type),
             nn.ReLU(inplace=True),
             nn.Conv2d(channels * 4, channels * 4, kernel_size=1, bias=False),
-            nn.BatchNorm2d(channels * 4),
+            make_norm(channels * 4, norm_type),
             nn.ReLU(inplace=True),
         )
         self.attn = SpatialSelfAttention2D(channels * 4) if use_attention else nn.Identity()
+        self.dropout = nn.Dropout2d(p=dropout_p) if dropout_p > 0 else nn.Identity()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         ll, lh, hl, hh = haar_dwt2d(x)
@@ -173,9 +295,9 @@ class FreqA(nn.Module):
         agg = torch.cat([ll, lh, hl, hh], dim=1)
         agg = self.mix(agg)
         agg = self.attn(agg)
-        ll, lh, hl, hh = torch.chunk(agg, 4, dim=1)
+        ll, lh, hl, hh = [t.contiguous() for t in torch.chunk(agg, 4, dim=1)]
         rec = haar_idwt2d(ll, lh, hl, hh)
-        return x + rec
+        return x + self.dropout(rec)
 
 
 class SimpleTextEncoder(nn.Module):
@@ -200,7 +322,16 @@ class SimpleTextEncoder(nn.Module):
 
 
 class CXRBertTextEncoder(nn.Module):
-    def __init__(self, model_dir: str, out_dim: int, freeze: bool = True, use_mean_pool: bool = True) -> None:
+    def __init__(
+        self,
+        model_dir: str,
+        out_dim: int,
+        freeze: bool = True,
+        use_mean_pool: bool = True,
+        unfreeze_last_n: int = 0,
+        lora_r: int = 0,
+        lora_alpha: float = 16.0,
+    ) -> None:
         super().__init__()
         from transformers import AutoConfig, AutoModel
         model_path = Path(model_dir)
@@ -214,6 +345,29 @@ class CXRBertTextEncoder(nn.Module):
         if freeze:
             for p in self.model.parameters():
                 p.requires_grad = False
+        if unfreeze_last_n > 0:
+            self._unfreeze_last_n_layers(unfreeze_last_n)
+        if lora_r > 0:
+            wrapped = apply_lora_to_backbone(self.model, r=lora_r, alpha=lora_alpha)
+            if wrapped == 0:
+                raise RuntimeError("LoRA requested but no attention projection layers were found in text backbone")
+
+    def _unfreeze_last_n_layers(self, unfreeze_last_n: int) -> None:
+        target = self.model.bert if hasattr(self.model, "bert") else self.model
+        encoder = getattr(target, "encoder", None)
+        layers = getattr(encoder, "layer", None)
+        if layers is not None and len(layers) > 0:
+            n = min(unfreeze_last_n, len(layers))
+            for layer in layers[-n:]:
+                for p in layer.parameters():
+                    p.requires_grad = True
+            return
+
+        # Fallback for uncommon backbone structures.
+        params = list(target.parameters())
+        n = min(unfreeze_last_n, len(params))
+        for p in params[-n:]:
+            p.requires_grad = True
 
     def forward(self, token_ids: torch.Tensor, attention_mask: Optional[torch.Tensor] = None):
         if attention_mask is None:
@@ -222,7 +376,7 @@ class CXRBertTextEncoder(nn.Module):
             outputs = self.model.bert(input_ids=token_ids, attention_mask=attention_mask, return_dict=True)
         else:
             outputs = self.model(input_ids=token_ids, attention_mask=attention_mask, return_dict=True)
-        tokens = self.token_proj(outputs.last_hidden_state)
+        tokens = self.token_proj(outputs.last_hidden_state.contiguous())
         if self.use_mean_pool:
             mask = attention_mask.float().unsqueeze(-1)
             pooled = (tokens * mask).sum(dim=1) / mask.sum(dim=1).clamp_min(1.0)
@@ -237,23 +391,49 @@ class TGFSBlockV2(nn.Module):
         channels: int,
         text_dim: int,
         use_attention: bool = False,
-        drop_hh: bool = False,
+        hh_drop_mode: str = "keep",
         lh_hl_scale: float = 1.0,
+        learnable_lh_hl_scale: bool = False,
         spatial_sharpen_power: float = 2.0,
+        learnable_spatial_sharpen: bool = False,
+        norm_type: str = "bn",
+        dropout_p: float = 0.0,
+        grounding_n_heads: int = 1,
     ) -> None:
         super().__init__()
         self.channels = channels
-        self.drop_hh = drop_hh
-        self.lh_hl_scale = lh_hl_scale
-        self.spatial_sharpen_power = spatial_sharpen_power
+        if hh_drop_mode not in {"zero", "keep", "learned"}:
+            raise ValueError(f"Unsupported hh_drop_mode: {hh_drop_mode}")
+        self.hh_drop_mode = hh_drop_mode
+        self.learnable_lh_hl_scale = learnable_lh_hl_scale
+        if learnable_lh_hl_scale:
+            self.lh_hl_scale = nn.Parameter(torch.tensor(float(lh_hl_scale), dtype=torch.float32))
+        else:
+            self.lh_hl_scale = float(lh_hl_scale)
+        self.learnable_spatial_sharpen = learnable_spatial_sharpen
+        if learnable_spatial_sharpen:
+            self.spatial_sharpen_power = nn.Parameter(torch.tensor(float(spatial_sharpen_power), dtype=torch.float32))
+        else:
+            self.spatial_sharpen_power = float(spatial_sharpen_power)
+        if self.hh_drop_mode == "learned":
+            # Start close to dropping HH, then let training recover if useful.
+            self.hh_keep_logit = nn.Parameter(torch.tensor(-4.0, dtype=torch.float32))
+        # Multi-head grounding: pick a valid n_heads that divides channels.
+        n_heads = max(1, int(grounding_n_heads))
+        while channels % n_heads != 0 and n_heads > 1:
+            n_heads -= 1
+        self.grounding_n_heads = n_heads
+        self.grounding_head_dim = channels // n_heads
         self.capture_debug = False
         self.last_debug: Optional[dict[str, torch.Tensor]] = None
+        # Raw spatial mask saved each forward (before sharpening), used for grounding supervision loss.
+        self.last_spatial_mask: Optional[torch.Tensor] = None
         self.local_conv = nn.Sequential(
             nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(channels),
+            make_norm(channels, norm_type),
             nn.GELU(),
             nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(channels),
+            make_norm(channels, norm_type),
             nn.GELU(),
         )
         self.icca_ll = ICCA(channels)
@@ -271,19 +451,20 @@ class TGFSBlockV2(nn.Module):
         self.vis_q = nn.Conv2d(channels * 4, channels, kernel_size=1, bias=False)
         self.spatial_gate_proj = nn.Sequential(
             nn.Conv2d(channels, channels, kernel_size=1, bias=False),
-            nn.BatchNorm2d(channels),
+            make_norm(channels, norm_type),
             nn.GELU(),
             nn.Conv2d(channels, 1, kernel_size=1, bias=True),
         )
         self.mixer = nn.Sequential(
             nn.Conv2d(channels * 4, channels * 4, kernel_size=3, padding=1, groups=4, bias=False),
-            nn.BatchNorm2d(channels * 4),
+            make_norm(channels * 4, norm_type),
             nn.GELU(),
             nn.Conv2d(channels * 4, channels * 4, kernel_size=1, bias=False),
-            nn.BatchNorm2d(channels * 4),
+            make_norm(channels * 4, norm_type),
             nn.GELU(),
         )
         self.attn = SpatialSelfAttention2D(channels * 4) if use_attention else nn.Identity()
+        self.dropout = nn.Dropout2d(p=dropout_p) if dropout_p > 0 else nn.Identity()
         self.branch_scale = nn.Sequential(
             nn.Linear(text_dim, text_dim),
             nn.GELU(),
@@ -294,14 +475,22 @@ class TGFSBlockV2(nn.Module):
 
     def _token_grounding(self, agg: torch.Tensor, text_tokens: torch.Tensor, attention_mask: Optional[torch.Tensor]):
         b, _, h, w = agg.shape
-        q = self.vis_q(agg).flatten(2).transpose(1, 2)
-        k = self.text_k(text_tokens)
-        v = self.text_v(text_tokens)
-        attn = torch.bmm(q, k.transpose(1, 2)) / (q.shape[-1] ** 0.5)
+        n_heads = self.grounding_n_heads
+        head_dim = self.grounding_head_dim
+        # Visual query: (B, C, H, W) -> (B, n_heads, H*W, head_dim)
+        q = self.vis_q(agg)
+        q = q.view(b, n_heads, head_dim, h * w).permute(0, 1, 3, 2).contiguous()
+        # Text key/value: (B, T, C) -> (B, n_heads, T, head_dim)
+        t = text_tokens.shape[1]
+        k = self.text_k(text_tokens).view(b, t, n_heads, head_dim).permute(0, 2, 1, 3).contiguous()
+        v = self.text_v(text_tokens).view(b, t, n_heads, head_dim).permute(0, 2, 1, 3).contiguous()
+        attn = torch.matmul(q, k.transpose(-1, -2)) / (head_dim ** 0.5)
         if attention_mask is not None:
-            attn = attn.masked_fill(~attention_mask.bool().unsqueeze(1), float('-inf'))
+            mask_b = attention_mask.bool().view(b, 1, 1, t)
+            attn = attn.masked_fill(~mask_b, float('-inf'))
         attn = torch.softmax(attn, dim=-1)
-        grounded = torch.bmm(attn, v).transpose(1, 2).reshape(b, self.channels, h, w)
+        grounded = torch.matmul(attn, v)  # (B, n_heads, H*W, head_dim)
+        grounded = grounded.permute(0, 1, 3, 2).contiguous().view(b, self.channels, h, w)
         spatial = torch.sigmoid(self.spatial_gate_proj(grounded))
         return spatial
 
@@ -314,41 +503,59 @@ class TGFSBlockV2(nn.Module):
         hl = self.icca_hl(hl)
         hh = self.icca_hh(hh)
         gates = self.freq_gate(text_pooled)
-        g_ll, g_lh, g_hl, g_hh = torch.chunk(gates, 4, dim=1)
-        a_ll = torch.sigmoid(g_ll).view(b, c, 1, 1)
-        a_lh = torch.sigmoid(g_lh).view(b, c, 1, 1)
-        a_hl = torch.sigmoid(g_hl).view(b, c, 1, 1)
-        a_hh = torch.sigmoid(g_hh).view(b, c, 1, 1)
+        g_ll, g_lh, g_hl, g_hh = [t.contiguous() for t in torch.chunk(gates, 4, dim=1)]
+        a_ll = torch.sigmoid(g_ll).reshape(b, c, 1, 1)
+        a_lh = torch.sigmoid(g_lh).reshape(b, c, 1, 1)
+        a_hl = torch.sigmoid(g_hl).reshape(b, c, 1, 1)
+        a_hh = torch.sigmoid(g_hh).reshape(b, c, 1, 1)
         ll = ll * a_ll
-        lh = lh * a_lh * self.lh_hl_scale
-        hl = hl * a_hl * self.lh_hl_scale
+        if self.learnable_lh_hl_scale:
+            lh_hl_scale = self.lh_hl_scale.clamp(0.0, 2.0)
+        else:
+            lh_hl_scale = ll.new_tensor(self.lh_hl_scale)
+        lh = lh * a_lh * lh_hl_scale
+        hl = hl * a_hl * lh_hl_scale
         hh = hh * a_hh
-        if self.drop_hh:
+        if self.hh_drop_mode == "zero":
             hh = torch.zeros_like(hh)
+        elif self.hh_drop_mode == "learned":
+            hh = hh * torch.sigmoid(self.hh_keep_logit)
         ll, lh, hl, hh = self.ccca(ll, lh, hl, hh)
         agg = torch.cat([ll, lh, hl, hh], dim=1)
-        spatial_mask = self._token_grounding(agg, text_tokens, text_mask)
-        spatial_mask = spatial_mask.pow(self.spatial_sharpen_power)
+        spatial_mask_raw = self._token_grounding(agg, text_tokens, text_mask)
+        # Save the raw sigmoid mask (before sharpening) so the train loop can
+        # supervise it directly with the ground-truth segmentation mask.
+        self.last_spatial_mask = spatial_mask_raw
+        if self.learnable_spatial_sharpen:
+            sharpen_power = self.spatial_sharpen_power.clamp(0.5, 4.0)
+        else:
+            sharpen_power = agg.new_tensor(self.spatial_sharpen_power)
+        spatial_mask = spatial_mask_raw.pow(sharpen_power)
         if self.capture_debug:
             self.last_debug = {
                 "a_ll_mean": a_ll.mean(dim=(1, 2, 3)).detach().cpu(),
                 "a_lh_mean": a_lh.mean(dim=(1, 2, 3)).detach().cpu(),
                 "a_hl_mean": a_hl.mean(dim=(1, 2, 3)).detach().cpu(),
                 "a_hh_mean": a_hh.mean(dim=(1, 2, 3)).detach().cpu(),
-                "lh_hl_scale": torch.tensor([self.lh_hl_scale], dtype=torch.float32),
+                "lh_hl_scale": lh_hl_scale.detach().view(1).cpu(),
+                "hh_drop_mode": torch.tensor(
+                    [0 if self.hh_drop_mode == "zero" else 1 if self.hh_drop_mode == "keep" else 2],
+                    dtype=torch.float32,
+                ),
+                "spatial_sharpen_power": sharpen_power.detach().view(1).cpu(),
                 "spatial_mask": spatial_mask.detach().cpu(),
             }
         agg = agg * spatial_mask
         agg = self.mixer(agg)
         agg = self.attn(agg)
-        ll, lh, hl, hh = torch.chunk(agg, 4, dim=1)
+        ll, lh, hl, hh = [t.contiguous() for t in torch.chunk(agg, 4, dim=1)]
         rec = haar_idwt2d(ll, lh, hl, hh)
         scales = self.branch_scale(text_pooled)
-        beta, gamma = torch.chunk(scales, 2, dim=1)
-        beta = (1.0 + 0.1 * torch.tanh(beta)).view(b, c, 1, 1)
-        gamma = (0.5 + 0.5 * torch.sigmoid(gamma)).view(b, c, 1, 1)
+        beta, gamma = [t.contiguous() for t in torch.chunk(scales, 2, dim=1)]
+        beta = (1.0 + 0.1 * torch.tanh(beta)).reshape(b, c, 1, 1)
+        gamma = (0.5 + 0.5 * torch.sigmoid(gamma)).reshape(b, c, 1, 1)
         out = beta * f0 + gamma * rec
-        return out
+        return self.dropout(out)
 
 
 class TGFSDecoderStageV2(nn.Module):
@@ -359,24 +566,41 @@ class TGFSDecoderStageV2(nn.Module):
         out_channels: int,
         text_dim: int,
         use_attention: bool,
-        drop_hh: bool = False,
+        hh_drop_mode: str = "keep",
         lh_hl_scale: float = 1.0,
+        learnable_lh_hl_scale: bool = False,
         spatial_sharpen_power: float = 2.0,
+        learnable_spatial_sharpen: bool = False,
+        norm_type: str = "bn",
+        dropout_p: float = 0.0,
+        grounding_n_heads: int = 1,
+        conv_block_depth: int = 2,
     ) -> None:
         super().__init__()
         self.reduce = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False),
-            nn.BatchNorm2d(out_channels),
+            make_norm(out_channels, norm_type),
             nn.ReLU(inplace=True),
         )
-        self.fuse = ConvBlock(out_channels + skip_channels, out_channels)
+        self.fuse = ConvBlock(
+            out_channels + skip_channels,
+            out_channels,
+            norm_type=norm_type,
+            depth=conv_block_depth,
+            dropout_p=dropout_p,
+        )
         self.tgfs = TGFSBlockV2(
             out_channels,
             text_dim=text_dim,
             use_attention=use_attention,
-            drop_hh=drop_hh,
+            hh_drop_mode=hh_drop_mode,
             lh_hl_scale=lh_hl_scale,
+            learnable_lh_hl_scale=learnable_lh_hl_scale,
             spatial_sharpen_power=spatial_sharpen_power,
+            learnable_spatial_sharpen=learnable_spatial_sharpen,
+            norm_type=norm_type,
+            dropout_p=dropout_p,
+            grounding_n_heads=grounding_n_heads,
         )
 
     def forward(self, x: torch.Tensor, skip: torch.Tensor, text_pooled: torch.Tensor, text_tokens: torch.Tensor, text_mask: Optional[torch.Tensor] = None):
@@ -386,6 +610,119 @@ class TGFSDecoderStageV2(nn.Module):
         x = self.fuse(x)
         x = self.tgfs(x, text_pooled=text_pooled, text_tokens=text_tokens, text_mask=text_mask)
         return x
+
+
+class ResNet50ImageEncoder(nn.Module):
+    """ResNet-50 backbone returning multi-scale features.
+
+    Output features (for input H x W):
+        s0: (B, 64,   H/2,  W/2)
+        s1: (B, 256,  H/4,  W/4)
+        s2: (B, 512,  H/8,  W/8)
+        s3: (B, 1024, H/16, W/16)
+        s4: (B, 2048, H/32, W/32)
+
+    `conv1` is adapted in-place to accept `in_channels` (defaults to 1 for
+    grayscale medical images) by averaging the original 3-channel ImageNet
+    weights. When `freeze_bn=True` (recommended for small-batch fine-tuning)
+    all BatchNorm layers are kept in eval mode with frozen affine params.
+    """
+
+    def __init__(self, in_channels: int = 1, pretrained: bool = True, freeze_bn: bool = True,
+                 image_backbone_weights: str = 'imagenet', radimagenet_ckpt: str | None = None) -> None:
+        super().__init__()
+        try:
+            from torchvision.models import resnet50, ResNet50_Weights
+        except ImportError as e:
+            raise RuntimeError("torchvision is required for ResNet50 encoder") from e
+        # Backbone init: ImageNet (default, unchanged) or RadImageNet medical weights.
+        if image_backbone_weights == 'radimagenet':
+            backbone = resnet50(weights=None)
+            self._load_radimagenet(backbone, radimagenet_ckpt)
+            have_pretrained = True
+        else:
+            weights = ResNet50_Weights.IMAGENET1K_V2 if pretrained else None
+            backbone = resnet50(weights=weights)
+            have_pretrained = pretrained
+        if in_channels != 3:
+            new_conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
+            if have_pretrained:
+                with torch.no_grad():
+                    avg_w = backbone.conv1.weight.mean(dim=1, keepdim=True)
+                    if in_channels == 1:
+                        new_conv1.weight.copy_(avg_w)
+                    else:
+                        new_conv1.weight.copy_(avg_w.repeat(1, in_channels, 1, 1))
+            backbone.conv1 = new_conv1
+        self.stem = nn.Sequential(backbone.conv1, backbone.bn1, backbone.relu)
+        self.maxpool = backbone.maxpool
+        self.layer1 = backbone.layer1
+        self.layer2 = backbone.layer2
+        self.layer3 = backbone.layer3
+        self.layer4 = backbone.layer4
+        self.channels_out = [64, 256, 512, 1024, 2048]
+        self.freeze_bn = bool(freeze_bn)
+        if self.freeze_bn:
+            self._set_bn_eval_and_freeze()
+
+    @staticmethod
+    def _load_radimagenet(backbone, ckpt_path) -> None:
+        """Load RadImageNet ResNet-50 medical weights into a torchvision ResNet-50.
+
+        The published checkpoint wraps the network as ``nn.Sequential`` (children
+        [:-2]), so keys are ``backbone.{0,1,4,5,6,7}.*`` and map onto torchvision's
+        ``conv1/bn1/layer1..layer4``. The final FC classifier is absent (cut off),
+        which is fine — this encoder never uses it.
+        """
+        from pathlib import Path as _Path
+        if not ckpt_path or not _Path(ckpt_path).exists():
+            raise FileNotFoundError(f"RadImageNet checkpoint not found: {ckpt_path}")
+        sd = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        if isinstance(sd, dict) and "state_dict" in sd:
+            sd = sd["state_dict"]
+        prefix_map = {
+            "backbone.0.": "conv1.", "backbone.1.": "bn1.",
+            "backbone.4.": "layer1.", "backbone.5.": "layer2.",
+            "backbone.6.": "layer3.", "backbone.7.": "layer4.",
+        }
+        remapped = {}
+        for k, v in sd.items():
+            for src, dst in prefix_map.items():
+                if k.startswith(src):
+                    remapped[dst + k[len(src):]] = v
+                    break
+        incompat = backbone.load_state_dict(remapped, strict=False)
+        missing = [m for m in incompat.missing_keys if not m.startswith("fc.")]
+        n_loaded = len(remapped) - len(incompat.unexpected_keys)
+        print(f"[RadImageNet] loaded {n_loaded}/{len(remapped)} tensors into ResNet-50 "
+              f"(missing non-fc={len(missing)}, unexpected={len(incompat.unexpected_keys)})")
+        if missing or incompat.unexpected_keys:
+            raise RuntimeError(
+                f"RadImageNet weight remap mismatch: missing={missing[:5]} "
+                f"unexpected={incompat.unexpected_keys[:5]}")
+
+    def _set_bn_eval_and_freeze(self) -> None:
+        for module in self.modules():
+            if isinstance(module, nn.BatchNorm2d):
+                module.eval()
+                for p in module.parameters():
+                    p.requires_grad = False
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        if self.freeze_bn:
+            for module in self.modules():
+                if isinstance(module, nn.BatchNorm2d):
+                    module.eval()
+        return self
+
+    def forward(self, x: torch.Tensor):
+        s0 = self.stem(x)
+        s1 = self.layer1(self.maxpool(s0))
+        s2 = self.layer2(s1)
+        s3 = self.layer3(s2)
+        s4 = self.layer4(s3)
+        return s0, s1, s2, s3, s4
 
 
 class LFAENetTGFSv2(nn.Module):
@@ -400,13 +737,38 @@ class LFAENetTGFSv2(nn.Module):
         text_encoder_type: str = 'simple',
         text_backbone_path: str = 'BiomedVLP-CXR-BERT-specialized',
         freeze_text_backbone: bool = True,
+        unfreeze_last_n: int = 0,
+        lora_r: int = 0,
+        lora_alpha: float = 16.0,
         use_external_text_encoder: bool = False,
+        fusion_mode: str = 'decoder',
         drop_hh_in_decoder: bool = True,
+        hh_drop_mode: str | None = None,
         low_level_hf_scale: float = 0.6,
+        learnable_low_level_hf_scale: bool = False,
         spatial_sharpen_power: float = 2.0,
+        learnable_spatial_sharpen: bool = False,
         use_deep_supervision: bool = False,
+        encoder_text_fusion: str = 'film',
+        norm_type: str = 'bn',
+        conv_block_depth: int = 2,
+        dropout_p: float = 0.0,
+        grounding_n_heads: int = 1,
+        encoder_type: str = 'from_scratch',
+        pretrained_image_encoder: bool = True,
+        freeze_encoder_bn: bool = True,
+        image_backbone_weights: str = 'imagenet',
+        radimagenet_ckpt: str | None = None,
     ) -> None:
         super().__init__()
+        if fusion_mode not in {'decoder', 'both'}:
+            raise ValueError(f"Unsupported fusion_mode: {fusion_mode}")
+        self.fusion_mode = fusion_mode
+        self.encoder_text_fusion = encoder_text_fusion
+        self.norm_type = norm_type
+        self.conv_block_depth = conv_block_depth
+        self.dropout_p = dropout_p
+        self.grounding_n_heads = grounding_n_heads
         c1, c2, c3, c4 = channels
         self.use_external_text_encoder = use_external_text_encoder
         self.text_encoder_type = text_encoder_type
@@ -414,67 +776,180 @@ class LFAENetTGFSv2(nn.Module):
             if text_encoder_type == 'simple':
                 self.text_encoder = SimpleTextEncoder(vocab_size=vocab_size, text_dim=text_dim)
             elif text_encoder_type in {'biomedvlp-cxr-bert', 'cxr-bert'}:
-                self.text_encoder = CXRBertTextEncoder(model_dir=text_backbone_path, out_dim=text_dim, freeze=freeze_text_backbone, use_mean_pool=True)
+                self.text_encoder = CXRBertTextEncoder(
+                    model_dir=text_backbone_path,
+                    out_dim=text_dim,
+                    freeze=freeze_text_backbone,
+                    use_mean_pool=True,
+                    unfreeze_last_n=unfreeze_last_n,
+                    lora_r=lora_r,
+                    lora_alpha=lora_alpha,
+                )
             else:
                 raise ValueError(f'Unsupported text_encoder_type: {text_encoder_type}')
-        self.stem = nn.Sequential(
-            nn.Conv2d(in_channels, c1, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(c1),
-            nn.ReLU(inplace=True),
+        if encoder_type not in {'from_scratch', 'resnet50'}:
+            raise ValueError(f"Unsupported encoder_type: {encoder_type}")
+        self.encoder_type = encoder_type
+        if hh_drop_mode is None:
+            hh_drop_mode = "zero" if drop_hh_in_decoder else "keep"
+        _cb_kwargs = dict(norm_type=norm_type, depth=conv_block_depth, dropout_p=dropout_p)
+        _fa_kwargs = dict(norm_type=norm_type, dropout_p=dropout_p)
+        _dec_kwargs = dict(
+            norm_type=norm_type,
+            dropout_p=dropout_p,
+            grounding_n_heads=grounding_n_heads,
+            conv_block_depth=conv_block_depth,
         )
-        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.enc1 = nn.Sequential(ConvBlock(c1, c1), FreqA(c1, use_attention=False))
-        self.enc2 = nn.Sequential(ConvBlock(c1, c2), FreqA(c2, use_attention=False))
-        self.enc3 = nn.Sequential(ConvBlock(c2, c3), FreqA(c3, use_attention=False))
-        self.enc4 = nn.Sequential(ConvBlock(c3, c4), FreqA(c4, use_attention=True))
-        self.bottleneck = nn.Sequential(ConvBlock(c4, bottleneck_channels), FreqA(bottleneck_channels, use_attention=True))
-        self.dec4 = TGFSDecoderStageV2(
-            bottleneck_channels,
-            c4,
-            c4,
-            text_dim=text_dim,
-            use_attention=True,
-            drop_hh=drop_hh_in_decoder,
-            lh_hl_scale=1.0,
-            spatial_sharpen_power=spatial_sharpen_power,
-        )
-        self.dec3 = TGFSDecoderStageV2(
-            c4,
-            c3,
-            c3,
-            text_dim=text_dim,
-            use_attention=True,
-            drop_hh=drop_hh_in_decoder,
-            lh_hl_scale=1.0,
-            spatial_sharpen_power=spatial_sharpen_power,
-        )
-        self.dec2 = TGFSDecoderStageV2(
-            c3,
-            c2,
-            c2,
-            text_dim=text_dim,
-            use_attention=False,
-            drop_hh=drop_hh_in_decoder,
-            lh_hl_scale=low_level_hf_scale,
-            spatial_sharpen_power=spatial_sharpen_power,
-        )
-        self.dec1 = TGFSDecoderStageV2(
-            c2,
-            c1,
-            c1,
-            text_dim=text_dim,
-            use_attention=False,
-            drop_hh=drop_hh_in_decoder,
-            lh_hl_scale=low_level_hf_scale,
-            spatial_sharpen_power=spatial_sharpen_power,
-        )
-        self.final_refine = ConvBlock(c1, c1)
-        self.use_deep_supervision = use_deep_supervision
-        if use_deep_supervision:
-            self.aux_head_d4 = nn.Conv2d(c4, num_classes, kernel_size=1)
-            self.aux_head_d3 = nn.Conv2d(c3, num_classes, kernel_size=1)
-            self.aux_head_d2 = nn.Conv2d(c2, num_classes, kernel_size=1)
-        self.head = nn.Conv2d(c1, num_classes, kernel_size=1)
+
+        if encoder_type == 'resnet50':
+            # ResNet-50 pretrained encoder. Skip channels follow ResNet stages:
+            # s0=64@H/2, s1=256@H/4, s2=512@H/8, s3=1024@H/16, s4=2048@H/32.
+            # FreqA is applied on s1/s2/s3 only; s4 (2048ch) is reduced to
+            # `bottleneck_channels` via ConvBlock + FreqA. We skip text fusion
+            # on the highest-res stem feature s0 to save memory.
+            self.image_encoder = ResNet50ImageEncoder(
+                in_channels=in_channels,
+                pretrained=pretrained_image_encoder,
+                freeze_bn=freeze_encoder_bn,
+                image_backbone_weights=image_backbone_weights,
+                radimagenet_ckpt=radimagenet_ckpt,
+            )
+            r0, r1, r2, r3, r4 = self.image_encoder.channels_out
+            self.freqa_r1 = FreqA(r1, use_attention=False, **_fa_kwargs)
+            self.freqa_r2 = FreqA(r2, use_attention=False, **_fa_kwargs)
+            self.freqa_r3 = FreqA(r3, use_attention=True, **_fa_kwargs)
+            self.bottleneck = nn.Sequential(
+                ConvBlock(r4, bottleneck_channels, **_cb_kwargs),
+                FreqA(bottleneck_channels, use_attention=True, **_fa_kwargs),
+            )
+            if self.fusion_mode == 'both':
+                if encoder_text_fusion == 'cross_attn':
+                    def _enc_fuse(ch):
+                        return SpatialTextFusion(ch, text_dim, norm_type=norm_type)
+                else:
+                    def _enc_fuse(ch):
+                        return TextFiLM2D(ch, text_dim)
+                self.r1_text = _enc_fuse(r1)
+                self.r2_text = _enc_fuse(r2)
+                self.r3_text = _enc_fuse(r3)
+                self.bottleneck_text = _enc_fuse(bottleneck_channels)
+            # Decoder: match current channel progression at decoder outputs.
+            dec_out_c4, dec_out_c3, dec_out_c2, dec_out_c1 = 512, 256, 128, 64
+            self._resnet_dec_channels = (dec_out_c4, dec_out_c3, dec_out_c2, dec_out_c1)
+            self.dec4 = TGFSDecoderStageV2(
+                bottleneck_channels, r3, dec_out_c4,
+                text_dim=text_dim, use_attention=True,
+                hh_drop_mode=hh_drop_mode, lh_hl_scale=1.0, learnable_lh_hl_scale=False,
+                spatial_sharpen_power=spatial_sharpen_power,
+                learnable_spatial_sharpen=learnable_spatial_sharpen,
+                **_dec_kwargs,
+            )
+            self.dec3 = TGFSDecoderStageV2(
+                dec_out_c4, r2, dec_out_c3,
+                text_dim=text_dim, use_attention=True,
+                hh_drop_mode=hh_drop_mode, lh_hl_scale=1.0, learnable_lh_hl_scale=False,
+                spatial_sharpen_power=spatial_sharpen_power,
+                learnable_spatial_sharpen=learnable_spatial_sharpen,
+                **_dec_kwargs,
+            )
+            self.dec2 = TGFSDecoderStageV2(
+                dec_out_c3, r1, dec_out_c2,
+                text_dim=text_dim, use_attention=False,
+                hh_drop_mode=hh_drop_mode,
+                lh_hl_scale=low_level_hf_scale,
+                learnable_lh_hl_scale=learnable_low_level_hf_scale,
+                spatial_sharpen_power=spatial_sharpen_power,
+                learnable_spatial_sharpen=learnable_spatial_sharpen,
+                **_dec_kwargs,
+            )
+            self.dec1 = TGFSDecoderStageV2(
+                dec_out_c2, r0, dec_out_c1,
+                text_dim=text_dim, use_attention=False,
+                hh_drop_mode=hh_drop_mode,
+                lh_hl_scale=low_level_hf_scale,
+                learnable_lh_hl_scale=learnable_low_level_hf_scale,
+                spatial_sharpen_power=spatial_sharpen_power,
+                learnable_spatial_sharpen=learnable_spatial_sharpen,
+                **_dec_kwargs,
+            )
+            self.final_refine = ConvBlock(dec_out_c1, dec_out_c1, **_cb_kwargs)
+            self.use_deep_supervision = use_deep_supervision
+            if use_deep_supervision:
+                self.aux_head_d4 = nn.Conv2d(dec_out_c4, num_classes, kernel_size=1)
+                self.aux_head_d3 = nn.Conv2d(dec_out_c3, num_classes, kernel_size=1)
+                self.aux_head_d2 = nn.Conv2d(dec_out_c2, num_classes, kernel_size=1)
+            self.head = nn.Conv2d(dec_out_c1, num_classes, kernel_size=1)
+        else:
+            # Original from-scratch encoder/decoder path (unchanged).
+            self.stem = nn.Sequential(
+                nn.Conv2d(in_channels, c1, kernel_size=3, padding=1, bias=False),
+                make_norm(c1, norm_type),
+                nn.ReLU(inplace=True),
+            )
+            self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+            self.enc1 = nn.Sequential(ConvBlock(c1, c1, **_cb_kwargs), FreqA(c1, use_attention=False, **_fa_kwargs))
+            self.enc2 = nn.Sequential(ConvBlock(c1, c2, **_cb_kwargs), FreqA(c2, use_attention=False, **_fa_kwargs))
+            self.enc3 = nn.Sequential(ConvBlock(c2, c3, **_cb_kwargs), FreqA(c3, use_attention=False, **_fa_kwargs))
+            self.enc4 = nn.Sequential(ConvBlock(c3, c4, **_cb_kwargs), FreqA(c4, use_attention=True, **_fa_kwargs))
+            self.bottleneck = nn.Sequential(
+                ConvBlock(c4, bottleneck_channels, **_cb_kwargs),
+                FreqA(bottleneck_channels, use_attention=True, **_fa_kwargs),
+            )
+            if self.fusion_mode == 'both':
+                if encoder_text_fusion == 'cross_attn':
+                    def _enc_fuse(ch):
+                        return SpatialTextFusion(ch, text_dim, norm_type=norm_type)
+                else:
+                    def _enc_fuse(ch):
+                        return TextFiLM2D(ch, text_dim)
+                self.enc1_text = _enc_fuse(c1)
+                self.enc2_text = _enc_fuse(c2)
+                self.enc3_text = _enc_fuse(c3)
+                self.enc4_text = _enc_fuse(c4)
+                self.bottleneck_text = _enc_fuse(bottleneck_channels)
+            self.dec4 = TGFSDecoderStageV2(
+                bottleneck_channels, c4, c4,
+                text_dim=text_dim, use_attention=True,
+                hh_drop_mode=hh_drop_mode, lh_hl_scale=1.0, learnable_lh_hl_scale=False,
+                spatial_sharpen_power=spatial_sharpen_power,
+                learnable_spatial_sharpen=learnable_spatial_sharpen,
+                **_dec_kwargs,
+            )
+            self.dec3 = TGFSDecoderStageV2(
+                c4, c3, c3,
+                text_dim=text_dim, use_attention=True,
+                hh_drop_mode=hh_drop_mode, lh_hl_scale=1.0, learnable_lh_hl_scale=False,
+                spatial_sharpen_power=spatial_sharpen_power,
+                learnable_spatial_sharpen=learnable_spatial_sharpen,
+                **_dec_kwargs,
+            )
+            self.dec2 = TGFSDecoderStageV2(
+                c3, c2, c2,
+                text_dim=text_dim, use_attention=False,
+                hh_drop_mode=hh_drop_mode,
+                lh_hl_scale=low_level_hf_scale,
+                learnable_lh_hl_scale=learnable_low_level_hf_scale,
+                spatial_sharpen_power=spatial_sharpen_power,
+                learnable_spatial_sharpen=learnable_spatial_sharpen,
+                **_dec_kwargs,
+            )
+            self.dec1 = TGFSDecoderStageV2(
+                c2, c1, c1,
+                text_dim=text_dim, use_attention=False,
+                hh_drop_mode=hh_drop_mode,
+                lh_hl_scale=low_level_hf_scale,
+                learnable_lh_hl_scale=learnable_low_level_hf_scale,
+                spatial_sharpen_power=spatial_sharpen_power,
+                learnable_spatial_sharpen=learnable_spatial_sharpen,
+                **_dec_kwargs,
+            )
+            self.final_refine = ConvBlock(c1, c1, **_cb_kwargs)
+            self.use_deep_supervision = use_deep_supervision
+            if use_deep_supervision:
+                self.aux_head_d4 = nn.Conv2d(c4, num_classes, kernel_size=1)
+                self.aux_head_d3 = nn.Conv2d(c3, num_classes, kernel_size=1)
+                self.aux_head_d2 = nn.Conv2d(c2, num_classes, kernel_size=1)
+            self.head = nn.Conv2d(c1, num_classes, kernel_size=1)
 
     def set_debug_capture(self, enabled: bool = True) -> None:
         self.dec4.tgfs.capture_debug = enabled
@@ -510,29 +985,92 @@ class LFAENetTGFSv2(nn.Module):
         return_aux: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
         text_tokens, text_pooled = self._encode_text(token_ids=token_ids, attention_mask=attention_mask, text_features=text_features)
-        x0 = self.stem(image)
-        e1 = self.enc1(x0)
-        x1 = self.pool(e1)
-        e2 = self.enc2(x1)
-        x2 = self.pool(e2)
-        e3 = self.enc3(x2)
-        x3 = self.pool(e3)
-        e4 = self.enc4(x3)
-        x4 = self.pool(e4)
-        b = self.bottleneck(x4)
-        d4 = self.dec4(b, e4, text_pooled, text_tokens, attention_mask)
-        d3 = self.dec3(d4, e3, text_pooled, text_tokens, attention_mask)
-        d2 = self.dec2(d3, e2, text_pooled, text_tokens, attention_mask)
-        d1 = self.dec1(d2, e1, text_pooled, text_tokens, attention_mask)
-        d1 = self.final_refine(d1)
-        logits = self.head(d1)
-        if return_aux and self.use_deep_supervision:
-            aux = {
-                "d4": F.interpolate(self.aux_head_d4(d4), size=logits.shape[-2:], mode="bilinear", align_corners=False),
-                "d3": F.interpolate(self.aux_head_d3(d3), size=logits.shape[-2:], mode="bilinear", align_corners=False),
-                "d2": F.interpolate(self.aux_head_d2(d2), size=logits.shape[-2:], mode="bilinear", align_corners=False),
-            }
-            return logits, aux
+        if self.encoder_type == 'resnet50':
+            s0, s1, s2, s3, s4 = self.image_encoder(image)
+            s1 = self.freqa_r1(s1)
+            s2 = self.freqa_r2(s2)
+            s3 = self.freqa_r3(s3)
+            if self.fusion_mode == 'both':
+                if self.encoder_text_fusion == 'cross_attn':
+                    s1 = self.r1_text(s1, text_tokens, attention_mask)
+                    s2 = self.r2_text(s2, text_tokens, attention_mask)
+                    s3 = self.r3_text(s3, text_tokens, attention_mask)
+                else:
+                    s1 = self.r1_text(s1, text_pooled)
+                    s2 = self.r2_text(s2, text_pooled)
+                    s3 = self.r3_text(s3, text_pooled)
+            b = self.bottleneck(s4)
+            if self.fusion_mode == 'both':
+                if self.encoder_text_fusion == 'cross_attn':
+                    b = self.bottleneck_text(b, text_tokens, attention_mask)
+                else:
+                    b = self.bottleneck_text(b, text_pooled)
+            d4 = self.dec4(b, s3, text_pooled, text_tokens, attention_mask)
+            d3 = self.dec3(d4, s2, text_pooled, text_tokens, attention_mask)
+            d2 = self.dec2(d3, s1, text_pooled, text_tokens, attention_mask)
+            d1 = self.dec1(d2, s0, text_pooled, text_tokens, attention_mask)
+            # ResNet50 stem reduces spatial by 2; upsample dec1 back to input res.
+            if d1.shape[-2:] != image.shape[-2:]:
+                d1 = F.interpolate(d1, size=image.shape[-2:], mode='bilinear', align_corners=False)
+            d1 = self.final_refine(d1)
+            logits = self.head(d1)
+        else:
+            x0 = self.stem(image)
+            e1 = self.enc1(x0)
+            if self.fusion_mode == 'both':
+                if self.encoder_text_fusion == 'cross_attn':
+                    e1 = self.enc1_text(e1, text_tokens, attention_mask)
+                else:
+                    e1 = self.enc1_text(e1, text_pooled)
+            x1 = self.pool(e1)
+            e2 = self.enc2(x1)
+            if self.fusion_mode == 'both':
+                if self.encoder_text_fusion == 'cross_attn':
+                    e2 = self.enc2_text(e2, text_tokens, attention_mask)
+                else:
+                    e2 = self.enc2_text(e2, text_pooled)
+            x2 = self.pool(e2)
+            e3 = self.enc3(x2)
+            if self.fusion_mode == 'both':
+                if self.encoder_text_fusion == 'cross_attn':
+                    e3 = self.enc3_text(e3, text_tokens, attention_mask)
+                else:
+                    e3 = self.enc3_text(e3, text_pooled)
+            x3 = self.pool(e3)
+            e4 = self.enc4(x3)
+            if self.fusion_mode == 'both':
+                if self.encoder_text_fusion == 'cross_attn':
+                    e4 = self.enc4_text(e4, text_tokens, attention_mask)
+                else:
+                    e4 = self.enc4_text(e4, text_pooled)
+            x4 = self.pool(e4)
+            b = self.bottleneck(x4)
+            if self.fusion_mode == 'both':
+                if self.encoder_text_fusion == 'cross_attn':
+                    b = self.bottleneck_text(b, text_tokens, attention_mask)
+                else:
+                    b = self.bottleneck_text(b, text_pooled)
+            d4 = self.dec4(b, e4, text_pooled, text_tokens, attention_mask)
+            d3 = self.dec3(d4, e3, text_pooled, text_tokens, attention_mask)
+            d2 = self.dec2(d3, e2, text_pooled, text_tokens, attention_mask)
+            d1 = self.dec1(d2, e1, text_pooled, text_tokens, attention_mask)
+            d1 = self.final_refine(d1)
+            logits = self.head(d1)
+        if return_aux:
+            aux: dict[str, torch.Tensor | dict[str, torch.Tensor]] = {}
+            if self.use_deep_supervision:
+                aux["d4"] = F.interpolate(self.aux_head_d4(d4), size=logits.shape[-2:], mode="bilinear", align_corners=False)
+                aux["d3"] = F.interpolate(self.aux_head_d3(d3), size=logits.shape[-2:], mode="bilinear", align_corners=False)
+                aux["d2"] = F.interpolate(self.aux_head_d2(d2), size=logits.shape[-2:], mode="bilinear", align_corners=False)
+            grounding: dict[str, torch.Tensor] = {}
+            for name, stage in (("dec4", self.dec4), ("dec3", self.dec3), ("dec2", self.dec2), ("dec1", self.dec1)):
+                m = stage.tgfs.last_spatial_mask
+                if m is not None:
+                    grounding[name] = m
+            if grounding:
+                aux["grounding"] = grounding
+            if aux:
+                return logits, aux
         return logits
 
 
