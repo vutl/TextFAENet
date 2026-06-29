@@ -1,0 +1,14 @@
+[
+  {
+    "run": "qata_bert_attn0628_qata_clinicalbert_v2_decoder_keep_seed42",
+    "error": "OSError(\"We couldn't connect to 'https://huggingface.co' to load the files, and couldn't find them in the cached files.\\nCheck your internet connection or see how to run the library in offline mode at 'https://huggingface.co/docs/transformers/installation#offline-mode'.\")"
+  },
+  {
+    "run": "qata_bert_attn0628_qata_clinicalbert_v3_decoder_keep_seed42",
+    "error": "OSError(\"We couldn't connect to 'https://huggingface.co' to load the files, and couldn't find them in the cached files.\\nCheck your internet connection or see how to run the library in offline mode at 'https://huggingface.co/docs/transformers/installation#offline-mode'.\")"
+  },
+  {
+    "run": "qata_bert_attn0628_qata_clinicalbert_v3_both_crossattn_keep_seed42",
+    "error": "OSError(\"We couldn't connect to 'https://huggingface.co' to load the files, and couldn't find them in the cached files.\\nCheck your internet connection or see how to run the library in offline mode at 'https://huggingface.co/docs/transformers/installation#offline-mode'.\")"
+  }
+]

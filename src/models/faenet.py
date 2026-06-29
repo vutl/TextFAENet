@@ -8,7 +8,14 @@ from src.modules.blocks import ConvBlock, FreqA
 
 
 class DecoderStage(nn.Module):
-    def __init__(self, in_channels: int, skip_channels: int, out_channels: int, use_attention: bool) -> None:
+    def __init__(
+        self,
+        in_channels: int,
+        skip_channels: int,
+        out_channels: int,
+        use_attention: bool,
+        freq_drop_bands: str | None = None,
+    ) -> None:
         super().__init__()
         self.reduce = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False),
@@ -16,7 +23,7 @@ class DecoderStage(nn.Module):
             nn.ReLU(inplace=True),
         )
         self.fuse = ConvBlock(out_channels + skip_channels, out_channels)
-        self.freqa = FreqA(out_channels, use_attention=use_attention)
+        self.freqa = FreqA(out_channels, use_attention=use_attention, freq_drop_bands=freq_drop_bands)
 
     def forward(self, x: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
         x = F.interpolate(x, size=skip.shape[-2:], mode="bilinear", align_corners=False)
@@ -35,6 +42,7 @@ class FAENet(nn.Module):
         channels: tuple[int, int, int, int] = (64, 128, 256, 512),
         bottleneck_channels: int = 768,
         use_attention_in_shallow: bool = False,
+        freq_drop_bands: str | None = None,
     ) -> None:
         super().__init__()
         c1, c2, c3, c4 = channels
@@ -46,23 +54,32 @@ class FAENet(nn.Module):
         )
         self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
 
-        self.enc1 = nn.Sequential(ConvBlock(c1, c1), FreqA(c1, use_attention=use_attention_in_shallow))
+        self.enc1 = nn.Sequential(
+            ConvBlock(c1, c1),
+            FreqA(c1, use_attention=use_attention_in_shallow, freq_drop_bands=freq_drop_bands),
+        )
 
-        self.enc2 = nn.Sequential(ConvBlock(c1, c2), FreqA(c2, use_attention=False))
+        self.enc2 = nn.Sequential(ConvBlock(c1, c2), FreqA(c2, use_attention=False, freq_drop_bands=freq_drop_bands))
 
-        self.enc3 = nn.Sequential(ConvBlock(c2, c3), FreqA(c3, use_attention=False))
+        self.enc3 = nn.Sequential(ConvBlock(c2, c3), FreqA(c3, use_attention=False, freq_drop_bands=freq_drop_bands))
 
-        self.enc4 = nn.Sequential(ConvBlock(c3, c4), FreqA(c4, use_attention=True))
+        self.enc4 = nn.Sequential(ConvBlock(c3, c4), FreqA(c4, use_attention=True, freq_drop_bands=freq_drop_bands))
 
         self.bottleneck = nn.Sequential(
             ConvBlock(c4, bottleneck_channels),
-            FreqA(bottleneck_channels, use_attention=True),
+            FreqA(bottleneck_channels, use_attention=True, freq_drop_bands=freq_drop_bands),
         )
 
-        self.dec4 = DecoderStage(bottleneck_channels, c4, c4, use_attention=True)
-        self.dec3 = DecoderStage(c4, c3, c3, use_attention=False)
-        self.dec2 = DecoderStage(c3, c2, c2, use_attention=False)
-        self.dec1 = DecoderStage(c2, c1, c1, use_attention=use_attention_in_shallow)
+        self.dec4 = DecoderStage(bottleneck_channels, c4, c4, use_attention=True, freq_drop_bands=freq_drop_bands)
+        self.dec3 = DecoderStage(c4, c3, c3, use_attention=False, freq_drop_bands=freq_drop_bands)
+        self.dec2 = DecoderStage(c3, c2, c2, use_attention=False, freq_drop_bands=freq_drop_bands)
+        self.dec1 = DecoderStage(
+            c2,
+            c1,
+            c1,
+            use_attention=use_attention_in_shallow,
+            freq_drop_bands=freq_drop_bands,
+        )
 
         self.head = nn.Conv2d(c1, num_classes, kernel_size=1)
 

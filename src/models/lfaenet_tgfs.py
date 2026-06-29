@@ -49,15 +49,19 @@ class CXRBertTextEncoder(nn.Module):
         from transformers import AutoConfig, AutoModel
 
         model_path = Path(model_dir)
-        if not model_path.exists():
-            raise FileNotFoundError(f"Text backbone directory not found: {model_dir}")
+        model_ref = str(model_path) if model_path.exists() else model_dir
+        local_files_only = model_path.exists()
 
         self.model = AutoModel.from_pretrained(
-            str(model_path),
+            model_ref,
             trust_remote_code=True,
-            local_files_only=True,
+            local_files_only=local_files_only,
         )
-        cfg = AutoConfig.from_pretrained(str(model_path), trust_remote_code=True, local_files_only=True)
+        cfg = AutoConfig.from_pretrained(
+            model_ref,
+            trust_remote_code=True,
+            local_files_only=local_files_only,
+        )
         hidden = int(getattr(cfg, "hidden_size", 768))
         self.proj = nn.Identity() if hidden == out_dim else nn.Linear(hidden, out_dim)
 

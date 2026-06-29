@@ -19,7 +19,7 @@ if (ROOT / ".hf_cache").exists():
     os.environ.setdefault("HF_HOME", str(ROOT / ".hf_cache"))
     os.environ.setdefault("TRANSFORMERS_CACHE", str(ROOT / ".hf_cache" / "transformers"))
 
-from src.models import FAENet, LFAENetTGFS, LFAENetTGFSv2
+from src.models import FAENet, LFAENetTGFS, LFAENetTGFSv2, LFAENetTGFSv3, ResNet50FAENet, ResNet50TGFSv2
 
 
 PALETTE = {
@@ -105,6 +105,13 @@ def build_model_from_config(cfg: dict[str, Any], device: torch.device) -> torch.
     text_encoder_type = "biomedvlp-cxr-bert" if cfg.get("use_cxr_bert", True) else "simple"
     if model_type == "faenet":
         model = FAENet(in_channels=1, num_classes=1)
+    elif model_type == "resnet50_faenet":
+        model = ResNet50FAENet(
+            in_channels=1,
+            num_classes=1,
+            visual_pretrained=cfg.get("visual_pretrained", "imagenet"),
+            freq_drop_bands=cfg.get("freq_drop_bands"),
+        )
     elif model_type == "lfaenet_tgfs":
         model = LFAENetTGFS(
             in_channels=1,
@@ -132,6 +139,43 @@ def build_model_from_config(cfg: dict[str, Any], device: torch.device) -> torch.
             fusion_mode=cfg.get("fusion_mode", "decoder"),
             unfreeze_last_n=int(cfg.get("unfreeze_last_n", 0) or 0),
             lora_r=int(cfg.get("lora_r", 0) or 0),
+        )
+    elif model_type == "lfaenet_tgfs_v3":
+        model = LFAENetTGFSv3(
+            in_channels=1,
+            num_classes=1,
+            text_dim=int(cfg.get("text_dim", 256)),
+            vocab_size=int(cfg.get("vocab_size", 30522)),
+            text_encoder_type=text_encoder_type,
+            text_backbone_path=cfg.get("cxr_bert_dir", "BiomedVLP-CXR-BERT-specialized"),
+            freeze_text_backbone=bool(cfg.get("freeze_text_backbone", True)),
+            hh_drop_mode=cfg.get("hh_drop_mode", "keep"),
+            low_level_hf_scale=float(cfg.get("low_level_hf_scale", 0.6)),
+            spatial_sharpen_power=float(cfg.get("spatial_sharpen_power", 2.0)),
+            fusion_mode=cfg.get("fusion_mode", "decoder"),
+            unfreeze_last_n=int(cfg.get("unfreeze_last_n", 0) or 0),
+            lora_r=int(cfg.get("lora_r", 0) or 0),
+            text_pooling=cfg.get("text_pooling", "mean"),
+        )
+    elif model_type == "resnet50_tgfs_v2":
+        model = ResNet50TGFSv2(
+            in_channels=1,
+            num_classes=1,
+            text_dim=int(cfg.get("text_dim", 256)),
+            vocab_size=int(cfg.get("vocab_size", 30522)),
+            text_encoder_type=text_encoder_type,
+            text_backbone_path=cfg.get("cxr_bert_dir", "BiomedVLP-CXR-BERT-specialized"),
+            freeze_text_backbone=bool(cfg.get("freeze_text_backbone", True)),
+            visual_pretrained=cfg.get("visual_pretrained", "imagenet"),
+            hh_drop_mode=cfg.get("hh_drop_mode", "keep"),
+            low_level_hf_scale=float(cfg.get("low_level_hf_scale", 0.6)),
+            spatial_sharpen_power=float(cfg.get("spatial_sharpen_power", 2.0)),
+            use_deep_supervision=bool(cfg.get("use_deep_supervision", False)),
+            fusion_mode=cfg.get("fusion_mode", "decoder"),
+            unfreeze_last_n=int(cfg.get("unfreeze_last_n", 0) or 0),
+            lora_r=int(cfg.get("lora_r", 0) or 0),
+            freq_drop_bands=cfg.get("freq_drop_bands"),
+            text_pooling=cfg.get("text_pooling", "mean"),
         )
     else:
         raise ValueError(f"Unsupported model_type: {model_type}")

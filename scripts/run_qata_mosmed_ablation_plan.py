@@ -78,6 +78,11 @@ VARIANTS: dict[str, dict[str, str | int | bool]] = {
         "model_type": "faenet",
         "no_text": True,
     },
+    "resnet50_faenet_visual_clean": {
+        "model_type": "resnet50_faenet",
+        "visual_pretrained": "imagenet",
+        "no_text": True,
+    },
     "cxr_frozen_zero_decoder": {
         "use_cxr_bert": True,
         "prompt_mode": "native",
@@ -128,6 +133,183 @@ VARIANTS: dict[str, dict[str, str | int | bool]] = {
         "fusion_mode": "both",
         "unfreeze_last_n": 1,
     },
+    "resnet50_simple_native_keep_decoder": {
+        "model_type": "resnet50_tgfs_v2",
+        "visual_pretrained": "imagenet",
+        "use_cxr_bert": False,
+        "prompt_mode": "native",
+        "hh_drop_mode": "keep",
+        "fusion_mode": "decoder",
+    },
+    "resnet50_simple_empty_keep_decoder": {
+        "model_type": "resnet50_tgfs_v2",
+        "visual_pretrained": "imagenet",
+        "use_cxr_bert": False,
+        "prompt_mode": "empty",
+        "hh_drop_mode": "keep",
+        "fusion_mode": "decoder",
+    },
+    "resnet50_simple_shuffle_keep_decoder": {
+        "model_type": "resnet50_tgfs_v2",
+        "visual_pretrained": "imagenet",
+        "use_cxr_bert": False,
+        "prompt_mode": "shuffle",
+        "hh_drop_mode": "keep",
+        "fusion_mode": "decoder",
+    },
+    "resnet50_simple_generic_keep_decoder": {
+        "model_type": "resnet50_tgfs_v2",
+        "visual_pretrained": "imagenet",
+        "use_cxr_bert": False,
+        "prompt_mode": "generic",
+        "hh_drop_mode": "keep",
+        "fusion_mode": "decoder",
+    },
+    "resnet50_simple_native_zero_decoder": {
+        "model_type": "resnet50_tgfs_v2",
+        "visual_pretrained": "imagenet",
+        "use_cxr_bert": False,
+        "prompt_mode": "native",
+        "hh_drop_mode": "zero",
+        "fusion_mode": "decoder",
+    },
+    "resnet50_simple_native_learned_decoder": {
+        "model_type": "resnet50_tgfs_v2",
+        "visual_pretrained": "imagenet",
+        "use_cxr_bert": False,
+        "prompt_mode": "native",
+        "hh_drop_mode": "learned",
+        "fusion_mode": "decoder",
+    },
+    "resnet50_simple_native_drop_ll_decoder": {
+        "model_type": "resnet50_tgfs_v2",
+        "visual_pretrained": "imagenet",
+        "use_cxr_bert": False,
+        "prompt_mode": "native",
+        "hh_drop_mode": "keep",
+        "fusion_mode": "decoder",
+        "freq_drop_bands": "ll",
+    },
+    "resnet50_simple_native_drop_lh_decoder": {
+        "model_type": "resnet50_tgfs_v2",
+        "visual_pretrained": "imagenet",
+        "use_cxr_bert": False,
+        "prompt_mode": "native",
+        "hh_drop_mode": "keep",
+        "fusion_mode": "decoder",
+        "freq_drop_bands": "lh",
+    },
+    "resnet50_simple_native_drop_hl_decoder": {
+        "model_type": "resnet50_tgfs_v2",
+        "visual_pretrained": "imagenet",
+        "use_cxr_bert": False,
+        "prompt_mode": "native",
+        "hh_drop_mode": "keep",
+        "fusion_mode": "decoder",
+        "freq_drop_bands": "hl",
+    },
+    "resnet50_simple_native_drop_hh_decoder": {
+        "model_type": "resnet50_tgfs_v2",
+        "visual_pretrained": "imagenet",
+        "use_cxr_bert": False,
+        "prompt_mode": "native",
+        "hh_drop_mode": "keep",
+        "fusion_mode": "decoder",
+        "freq_drop_bands": "hh",
+    },
+    "resnet50_cxr_native_keep_decoder": {
+        "model_type": "resnet50_tgfs_v2",
+        "visual_pretrained": "imagenet",
+        "use_cxr_bert": True,
+        "prompt_mode": "native",
+        "hh_drop_mode": "keep",
+        "fusion_mode": "decoder",
+    },
+    "resnet50_cxr_empty_keep_decoder": {
+        "model_type": "resnet50_tgfs_v2",
+        "visual_pretrained": "imagenet",
+        "use_cxr_bert": True,
+        "prompt_mode": "empty",
+        "hh_drop_mode": "keep",
+        "fusion_mode": "decoder",
+    },
+    "resnet50_cxr_shuffle_keep_decoder": {
+        "model_type": "resnet50_tgfs_v2",
+        "visual_pretrained": "imagenet",
+        "use_cxr_bert": True,
+        "prompt_mode": "shuffle",
+        "hh_drop_mode": "keep",
+        "fusion_mode": "decoder",
+    },
+    "resnet50_cxr_generic_keep_decoder": {
+        "model_type": "resnet50_tgfs_v2",
+        "visual_pretrained": "imagenet",
+        "use_cxr_bert": True,
+        "prompt_mode": "generic",
+        "hh_drop_mode": "keep",
+        "fusion_mode": "decoder",
+    },
+    "resnet50_cxr_native_zero_decoder": {
+        "model_type": "resnet50_tgfs_v2",
+        "visual_pretrained": "imagenet",
+        "use_cxr_bert": True,
+        "prompt_mode": "native",
+        "hh_drop_mode": "zero",
+        "fusion_mode": "decoder",
+    },
+    "resnet50_cxr_native_learned_decoder": {
+        "model_type": "resnet50_tgfs_v2",
+        "visual_pretrained": "imagenet",
+        "use_cxr_bert": True,
+        "prompt_mode": "native",
+        "hh_drop_mode": "learned",
+        "fusion_mode": "decoder",
+    },
+    "resnet50_cxr_lora8_keep_decoder": {
+        "model_type": "resnet50_tgfs_v2",
+        "visual_pretrained": "imagenet",
+        "use_cxr_bert": True,
+        "prompt_mode": "native",
+        "hh_drop_mode": "keep",
+        "fusion_mode": "decoder",
+        "lora_r": 8,
+    },
+    "resnet50_cxr_native_drop_ll_decoder": {
+        "model_type": "resnet50_tgfs_v2",
+        "visual_pretrained": "imagenet",
+        "use_cxr_bert": True,
+        "prompt_mode": "native",
+        "hh_drop_mode": "keep",
+        "fusion_mode": "decoder",
+        "freq_drop_bands": "ll",
+    },
+    "resnet50_cxr_native_drop_lh_decoder": {
+        "model_type": "resnet50_tgfs_v2",
+        "visual_pretrained": "imagenet",
+        "use_cxr_bert": True,
+        "prompt_mode": "native",
+        "hh_drop_mode": "keep",
+        "fusion_mode": "decoder",
+        "freq_drop_bands": "lh",
+    },
+    "resnet50_cxr_native_drop_hl_decoder": {
+        "model_type": "resnet50_tgfs_v2",
+        "visual_pretrained": "imagenet",
+        "use_cxr_bert": True,
+        "prompt_mode": "native",
+        "hh_drop_mode": "keep",
+        "fusion_mode": "decoder",
+        "freq_drop_bands": "hl",
+    },
+    "resnet50_cxr_native_drop_hh_decoder": {
+        "model_type": "resnet50_tgfs_v2",
+        "visual_pretrained": "imagenet",
+        "use_cxr_bert": True,
+        "prompt_mode": "native",
+        "hh_drop_mode": "keep",
+        "fusion_mode": "decoder",
+        "freq_drop_bands": "hh",
+    },
 }
 
 
@@ -136,10 +318,14 @@ def quote_cmd(cmd: list[str]) -> str:
 
 
 def add_variant_flags(cmd: list[str], variant: dict[str, str | int | bool]) -> list[str]:
-    if variant.get("model_type") == "faenet":
+    if variant.get("model_type") in {"faenet", "resnet50_faenet"}:
         if bool(variant.get("no_text", True)):
             cmd.append("--no-text")
         cmd.append("--no-use-cxr-bert")
+        if "freq_drop_bands" in variant:
+            cmd.extend(["--freq-drop-bands", str(variant["freq_drop_bands"])])
+        if "visual_pretrained" in variant:
+            cmd.extend(["--visual-pretrained", str(variant["visual_pretrained"])])
         return cmd
 
     use_cxr_bert = bool(variant.get("use_cxr_bert", True))
@@ -149,6 +335,10 @@ def add_variant_flags(cmd: list[str], variant: dict[str, str | int | bool]) -> l
     cmd.extend(["--fusion-mode", str(variant.get("fusion_mode", "decoder"))])
     cmd.extend(["--unfreeze-last-n", str(int(variant.get("unfreeze_last_n", 0)))])
     cmd.extend(["--lora-r", str(int(variant.get("lora_r", 0)))])
+    if "freq_drop_bands" in variant:
+        cmd.extend(["--freq-drop-bands", str(variant["freq_drop_bands"])])
+    if "visual_pretrained" in variant:
+        cmd.extend(["--visual-pretrained", str(variant["visual_pretrained"])])
     cmd.append("--freeze-text-backbone")
     return cmd
 

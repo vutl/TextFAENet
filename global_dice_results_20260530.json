@@ -1,0 +1,362 @@
+[
+  {
+    "run": "qata_b4_e50_cxrbert_frozen_v2",
+    "status": "ok",
+    "mean_dice": 0.8168948748640167,
+    "mean_iou": 0.7253759815155164,
+    "threshold": 0.5,
+    "global_dice": 0.27057422846480267,
+    "global_iou": 0.15645321870312212,
+    "reason": ""
+  },
+  {
+    "run": "qata_b4_e50_cxrbert_frozen_v2_rerun",
+    "status": "ok",
+    "mean_dice": 0.8033116279567798,
+    "mean_iou": 0.7084460373693242,
+    "threshold": 0.5,
+    "global_dice": 7.930422910420169e-14,
+    "global_iou": 7.930422910420169e-14,
+    "reason": ""
+  },
+  {
+    "run": "qata_diag0516_qata_cxr_frozen_keep_both_empty_seed42",
+    "status": "ok",
+    "mean_dice": 0.7641671370919125,
+    "mean_iou": 0.6647341584888884,
+    "threshold": 0.45,
+    "global_dice": 0.8475862144035218,
+    "global_iou": 0.7354877432022642,
+    "reason": ""
+  },
+  {
+    "run": "qata_diag0516_qata_cxr_frozen_keep_both_shuffle_seed42",
+    "status": "ok",
+    "mean_dice": 0.7645166438558827,
+    "mean_iou": 0.6626716303464821,
+    "threshold": 0.4,
+    "global_dice": 0.848504796367947,
+    "global_iou": 0.7368721933809175,
+    "reason": ""
+  },
+  {
+    "run": "qata_diag0516_qata_cxr_frozen_learned_both_seed42",
+    "status": "ok",
+    "mean_dice": 0.8118555436526299,
+    "mean_iou": 0.7167541739070654,
+    "threshold": 0.35,
+    "global_dice": 0.8864689903059795,
+    "global_iou": 0.7960882836568458,
+    "reason": ""
+  },
+  {
+    "run": "qata_diag0516_qata_cxr_lora8_keep_both_seed42",
+    "status": "no-final",
+    "mean_dice": null,
+    "mean_iou": null,
+    "threshold": null,
+    "global_dice": null,
+    "global_iou": null,
+    "reason": "final_test.json missing; incomplete run"
+  },
+  {
+    "run": "qata_diag0516_qata_simple_generic_keep_both_seed42",
+    "status": "ok",
+    "mean_dice": 0.7599441152213877,
+    "mean_iou": 0.6574922261199789,
+    "threshold": 0.45,
+    "global_dice": 0.8415817121076705,
+    "global_iou": 0.7264920805410341,
+    "reason": ""
+  },
+  {
+    "run": "qata_diag0516_qata_simple_native_keep_both_seed42",
+    "status": "ok",
+    "mean_dice": 0.8211994174804489,
+    "mean_iou": 0.7305165620305926,
+    "threshold": 0.55,
+    "global_dice": 0.894452062129452,
+    "global_iou": 0.8090576912045162,
+    "reason": ""
+  },
+  {
+    "run": "qata_faenet_notext_adamw_cosine_e30",
+    "status": "ok",
+    "mean_dice": 0.54460388312155,
+    "mean_iou": 0.4105387996663894,
+    "threshold": 0.5,
+    "global_dice": 0.1954624052435427,
+    "global_iou": 0.10831716990077964,
+    "reason": ""
+  },
+  {
+    "run": "qata_faenet_notext_valclean_e5",
+    "status": "ok",
+    "mean_dice": 0.6425650975119415,
+    "mean_iou": 0.5154241809941871,
+    "threshold": 0.5,
+    "global_dice": 0.7372539292968554,
+    "global_iou": 0.5838497116734956,
+    "reason": ""
+  },
+  {
+    "run": "qata_paper0516_qata_faenet_visual_clean_seed42",
+    "status": "ok",
+    "mean_dice": 0.7756669995126743,
+    "mean_iou": 0.6764833077027802,
+    "threshold": 0.35,
+    "global_dice": 0.8611577015606741,
+    "global_iou": 0.7561694035608068,
+    "reason": ""
+  },
+  {
+    "run": "qata_paper0516_qata_simple_empty_keep_both_seed42",
+    "status": "ok",
+    "mean_dice": 0.7655706670987358,
+    "mean_iou": 0.6663923909736266,
+    "threshold": 0.35,
+    "global_dice": 0.8543184684014479,
+    "global_iou": 0.7456858165544835,
+    "reason": ""
+  },
+  {
+    "run": "qata_paper0516_qata_simple_native_keep_decoder_seed42",
+    "status": "ok",
+    "mean_dice": 0.8163067423483262,
+    "mean_iou": 0.7243082563626969,
+    "threshold": 0.35,
+    "global_dice": 0.894831075879884,
+    "global_iou": 0.8096781011032447,
+    "reason": ""
+  },
+  {
+    "run": "qata_paper0516_qata_simple_native_learned_both_seed42",
+    "status": "ok",
+    "mean_dice": 0.8271633325783646,
+    "mean_iou": 0.7391145136399164,
+    "threshold": 0.5,
+    "global_dice": 0.8996352553021029,
+    "global_iou": 0.8175791342252636,
+    "reason": ""
+  },
+  {
+    "run": "qata_paper0516_qata_simple_native_zero_both_seed42",
+    "status": "ok",
+    "mean_dice": 0.8258792906735863,
+    "mean_iou": 0.7371655126843809,
+    "threshold": 0.35,
+    "global_dice": 0.9003984912686577,
+    "global_iou": 0.818840720132781,
+    "reason": ""
+  },
+  {
+    "run": "qata_paper0516_qata_simple_shuffle_keep_both_seed42",
+    "status": "ok",
+    "mean_dice": 0.7585418939252432,
+    "mean_iou": 0.6575028675490381,
+    "threshold": 0.35,
+    "global_dice": 0.8466279196144966,
+    "global_iou": 0.7340457897433496,
+    "reason": ""
+  },
+  {
+    "run": "qata_resnet0523_fp32fix_qata_resnet50_faenet_visual_clean_seed42",
+    "status": "ok",
+    "mean_dice": 0.7790195416299968,
+    "mean_iou": 0.678138357113575,
+    "threshold": 0.35,
+    "global_dice": 0.8648931065997953,
+    "global_iou": 0.7619485985227556,
+    "reason": ""
+  },
+  {
+    "run": "qata_resnet0523_fp32fix_qata_resnet50_simple_empty_keep_decoder_seed42",
+    "status": "ok",
+    "mean_dice": 0.7859957780414357,
+    "mean_iou": 0.6882752713330076,
+    "threshold": 0.35,
+    "global_dice": 0.8707782332174747,
+    "global_iou": 0.7711312860170761,
+    "reason": ""
+  },
+  {
+    "run": "qata_resnet0523_fp32fix_qata_resnet50_simple_native_drop_hh_decoder_seed42",
+    "status": "no-checkpoint",
+    "mean_dice": 0.8196310610818502,
+    "mean_iou": 0.7285258062817649,
+    "threshold": 0.5,
+    "global_dice": null,
+    "global_iou": null,
+    "reason": "best.pt missing/deleted"
+  },
+  {
+    "run": "qata_resnet0523_fp32fix_qata_resnet50_simple_native_drop_ll_decoder_seed42",
+    "status": "no-checkpoint",
+    "mean_dice": 0.8107899353612348,
+    "mean_iou": 0.7185360494656013,
+    "threshold": 0.35,
+    "global_dice": null,
+    "global_iou": null,
+    "reason": "best.pt missing/deleted"
+  },
+  {
+    "run": "qata_resnet0523_fp32fix_qata_resnet50_simple_native_keep_decoder_seed42",
+    "status": "ok",
+    "mean_dice": 0.8157105017277378,
+    "mean_iou": 0.7249084771003412,
+    "threshold": 0.5,
+    "global_dice": 0.8957531547667296,
+    "global_iou": 0.8111892360240436,
+    "reason": ""
+  },
+  {
+    "run": "qata_resnet0523_qata_resnet50_simple_empty_keep_decoder_seed42",
+    "status": "no-checkpoint",
+    "mean_dice": null,
+    "mean_iou": null,
+    "threshold": null,
+    "global_dice": null,
+    "global_iou": null,
+    "reason": "best.pt missing/deleted"
+  },
+  {
+    "run": "qata_resnet0523_qata_resnet50_simple_generic_keep_decoder_seed42",
+    "status": "ok",
+    "mean_dice": 0.7923319930164936,
+    "mean_iou": 0.6963534086153953,
+    "threshold": 0.35,
+    "global_dice": 0.8750032725598741,
+    "global_iou": 0.7777829492454695,
+    "reason": ""
+  },
+  {
+    "run": "qata_resnet0523_qata_resnet50_simple_native_drop_hh_decoder_seed42",
+    "status": "no-checkpoint",
+    "mean_dice": null,
+    "mean_iou": null,
+    "threshold": null,
+    "global_dice": null,
+    "global_iou": null,
+    "reason": "best.pt missing/deleted"
+  },
+  {
+    "run": "qata_resnet0523_qata_resnet50_simple_native_drop_hl_decoder_seed42",
+    "status": "no-checkpoint",
+    "mean_dice": 0.8210204898296998,
+    "mean_iou": 0.7324054907789077,
+    "threshold": 0.45,
+    "global_dice": null,
+    "global_iou": null,
+    "reason": "best.pt missing/deleted"
+  },
+  {
+    "run": "qata_resnet0523_qata_resnet50_simple_native_drop_lh_decoder_seed42",
+    "status": "no-checkpoint",
+    "mean_dice": 0.8163061939155203,
+    "mean_iou": 0.7259409356675642,
+    "threshold": 0.35,
+    "global_dice": null,
+    "global_iou": null,
+    "reason": "best.pt missing/deleted"
+  },
+  {
+    "run": "qata_resnet0523_qata_resnet50_simple_native_drop_ll_decoder_seed42",
+    "status": "no-checkpoint",
+    "mean_dice": null,
+    "mean_iou": null,
+    "threshold": null,
+    "global_dice": null,
+    "global_iou": null,
+    "reason": "best.pt missing/deleted"
+  },
+  {
+    "run": "qata_resnet0523_qata_resnet50_simple_native_keep_decoder_seed42",
+    "status": "no-final",
+    "mean_dice": null,
+    "mean_iou": null,
+    "threshold": null,
+    "global_dice": null,
+    "global_iou": null,
+    "reason": "final_test.json missing; incomplete run"
+  },
+  {
+    "run": "qata_resnet0523_qata_resnet50_simple_native_learned_decoder_seed42",
+    "status": "ok",
+    "mean_dice": 0.8223648372704943,
+    "mean_iou": 0.7343201640097351,
+    "threshold": 0.4,
+    "global_dice": 0.900025098575017,
+    "global_iou": 0.8182233043763725,
+    "reason": ""
+  },
+  {
+    "run": "qata_resnet0523_qata_resnet50_simple_native_zero_decoder_seed42",
+    "status": "ok",
+    "mean_dice": 0.8208301794130934,
+    "mean_iou": 0.7309909510845437,
+    "threshold": 0.35,
+    "global_dice": 0.9003090802512164,
+    "global_iou": 0.8186928382175717,
+    "reason": ""
+  },
+  {
+    "run": "qata_resnet0523_qata_resnet50_simple_shuffle_keep_decoder_seed42",
+    "status": "ok",
+    "mean_dice": 0.7932374595131,
+    "mean_iou": 0.6978213699192992,
+    "threshold": 0.35,
+    "global_dice": 0.8765645653106469,
+    "global_iou": 0.7802536204967033,
+    "reason": ""
+  },
+  {
+    "run": "qata_resnet0524_cxr_qata_resnet50_cxr_native_keep_decoder_seed42",
+    "status": "ok",
+    "mean_dice": 0.8029943031376837,
+    "mean_iou": 0.7092713420129678,
+    "threshold": 0.35,
+    "global_dice": 0.8883458302400584,
+    "global_iou": 0.7991206747615601,
+    "reason": ""
+  },
+  {
+    "run": "qata_v3_remote_main_cxr_seed42",
+    "status": "ok",
+    "mean_dice": 0.7992677740986427,
+    "mean_iou": 0.7056754300054036,
+    "threshold": 0.45,
+    "global_dice": 0.882869522355144,
+    "global_iou": 0.7903011689524585,
+    "reason": ""
+  },
+  {
+    "run": "screening0506_mosmed_cxr_frozen_keep_both_seed42",
+    "status": "skipped",
+    "mean_dice": 0.6736882788794382,
+    "mean_iou": 0.5290227821895055,
+    "threshold": 0.5,
+    "global_dice": null,
+    "global_iou": null,
+    "reason": "MosMed run: checkpoint was deleted or different evaluator/dataset loader needed."
+  },
+  {
+    "run": "screening0506_qata_cxr_frozen_keep_both_seed42",
+    "status": "ok",
+    "mean_dice": 0.8154884235676385,
+    "mean_iou": 0.724244593250053,
+    "threshold": 0.35,
+    "global_dice": 0.8937187091003569,
+    "global_iou": 0.8078584682324149,
+    "reason": ""
+  },
+  {
+    "run": "screening0506_qata_cxr_frozen_keep_decoder_seed42",
+    "status": "ok",
+    "mean_dice": 0.8125021235422286,
+    "mean_iou": 0.7197636491522221,
+    "threshold": 0.4,
+    "global_dice": 0.8895723320009365,
+    "global_iou": 0.8011078592844415,
+    "reason": ""
+  }
+]

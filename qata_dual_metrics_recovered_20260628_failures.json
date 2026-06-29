@@ -1,0 +1,18 @@
+[
+  {
+    "run": "qata_b4_e50_cxrbert_frozen_v2",
+    "error": "RuntimeError(\"Checkpoint mismatch for qata_b4_e50_cxrbert_frozen_v2: missing=['enc1.block.conv1.weight', 'enc1.block.bn1.weight', 'enc1.block.bn1.bias', 'enc1.block.bn1.running_mean', 'enc1.block.bn1.running_var', 'enc1.block.conv2.weight', 'enc1.block.bn2.weight', 'enc1.block.bn2.bias', 'enc1.block.bn2.running_mean', 'enc1.block.bn2.running_var'] unexpected=['enc1.0.conv1.weight', 'enc1.0.bn1.weight', 'enc1.0.bn1.bias', 'enc1.0.bn1.running_mean', 'enc1.0.bn1.running_var', 'enc1.0.bn1.num_batches_tracked', 'enc1.0.conv2.weight', 'enc1.0.bn2.weight', 'enc1.0.bn2.bias', 'enc1.0.bn2.running_mean']\")"
+  },
+  {
+    "run": "qata_b4_e50_cxrbert_frozen_v2_rerun",
+    "error": "RuntimeError(\"Checkpoint mismatch for qata_b4_e50_cxrbert_frozen_v2_rerun: missing=['enc1.block.conv1.weight', 'enc1.block.bn1.weight', 'enc1.block.bn1.bias', 'enc1.block.bn1.running_mean', 'enc1.block.bn1.running_var', 'enc1.block.conv2.weight', 'enc1.block.bn2.weight', 'enc1.block.bn2.bias', 'enc1.block.bn2.running_mean', 'enc1.block.bn2.running_var'] unexpected=['enc1.0.conv1.weight', 'enc1.0.bn1.weight', 'enc1.0.bn1.bias', 'enc1.0.bn1.running_mean', 'enc1.0.bn1.running_var', 'enc1.0.bn1.num_batches_tracked', 'enc1.0.conv2.weight', 'enc1.0.bn2.weight', 'enc1.0.bn2.bias', 'enc1.0.bn2.running_mean']\")"
+  },
+  {
+    "run": "qata_faenet_notext_valclean_e5",
+    "error": "RuntimeError(\"Checkpoint mismatch for qata_faenet_notext_valclean_e5: missing=[] unexpected=['enc1.1.dwt.dwt.h0_col', 'enc1.1.dwt.dwt.h1_col', 'enc1.1.dwt.dwt.h0_row', 'enc1.1.dwt.dwt.h1_row', 'enc1.1.idwt.idwt.g0_col', 'enc1.1.idwt.idwt.g1_col', 'enc1.1.idwt.idwt.g0_row', 'enc1.1.idwt.idwt.g1_row', 'enc2.1.dwt.dwt.h0_col', 'enc2.1.dwt.dwt.h1_col']\")"
+  },
+  {
+    "run": "qata_faenet_notext_adamw_cosine_e30",
+    "error": "RuntimeError(\"Checkpoint mismatch for qata_faenet_notext_adamw_cosine_e30: missing=[] unexpected=['enc1.1.dwt.dwt.h0_col', 'enc1.1.dwt.dwt.h1_col', 'enc1.1.dwt.dwt.h0_row', 'enc1.1.dwt.dwt.h1_row', 'enc1.1.idwt.idwt.g0_col', 'enc1.1.idwt.idwt.g1_col', 'enc1.1.idwt.idwt.g0_row', 'enc1.1.idwt.idwt.g1_row', 'enc2.1.dwt.dwt.h0_col', 'enc2.1.dwt.dwt.h1_col']\")"
+  }
+]

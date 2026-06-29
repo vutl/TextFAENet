@@ -23,9 +23,34 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from src.data import QaTaCOV19Dataset
-from src.models import FAENet, LFAENetTGFS, LFAENetTGFSv2
+from src.models import (
+    FAENet,
+    LFAENetTGFS,
+    LFAENetTGFSv2,
+    LFAENetTGFSv2OldText,
+    LFAENetTGFSv3,
+    LFAENetTGFSv3OldText,
+    ResNet50FAENet,
+    ResNet50TGFSv2,
+)
 
 PROMPT_MODE_CHOICES = ("native", "canonical", "generic", "lesion", "empty", "shuffle")
+TGFS_V2_MODEL_TYPES = {
+    "lfaenet_tgfs_v2",
+    "lfaenet_tgfs_v2_oldtext",
+    "resnet50_tgfs_v2",
+    "lfaenet_tgfs_v3",
+    "lfaenet_tgfs_v3_oldtext",
+}
+TEXT_MODEL_TYPES = {
+    "lfaenet_tgfs",
+    "lfaenet_tgfs_v2",
+    "lfaenet_tgfs_v2_oldtext",
+    "resnet50_tgfs_v2",
+    "lfaenet_tgfs_v3",
+    "lfaenet_tgfs_v3_oldtext",
+}
+VISUAL_ONLY_MODEL_TYPES = {"faenet", "resnet50_faenet"}
 
 
 def set_seed(seed: int) -> None:
@@ -174,7 +199,14 @@ def create_model(args, device: torch.device):
         text_encoder_type = "biomedvlp-cxr-bert"
 
     if args.model_type == "faenet":
-        model = FAENet(in_channels=1, num_classes=1)
+        model = FAENet(in_channels=1, num_classes=1, freq_drop_bands=args.freq_drop_bands)
+    elif args.model_type == "resnet50_faenet":
+        model = ResNet50FAENet(
+            in_channels=1,
+            num_classes=1,
+            visual_pretrained=args.visual_pretrained,
+            freq_drop_bands=args.freq_drop_bands,
+        )
     elif args.model_type == "lfaenet_tgfs":
         model = LFAENetTGFS(
             in_channels=1,
@@ -185,8 +217,9 @@ def create_model(args, device: torch.device):
             text_backbone_path=args.cxr_bert_dir,
             freeze_text_backbone=args.freeze_text_backbone,
         )
-    else:
-        model = LFAENetTGFSv2(
+    elif args.model_type in {"lfaenet_tgfs_v2", "lfaenet_tgfs_v2_oldtext"}:
+        model_cls = LFAENetTGFSv2OldText if args.model_type == "lfaenet_tgfs_v2_oldtext" else LFAENetTGFSv2
+        model = model_cls(
             in_channels=1,
             num_classes=1,
             text_dim=args.text_dim,
@@ -202,15 +235,71 @@ def create_model(args, device: torch.device):
             fusion_mode=args.fusion_mode,
             unfreeze_last_n=args.unfreeze_last_n,
             lora_r=args.lora_r,
+            freq_drop_bands=args.freq_drop_bands,
+            text_pooling=args.text_pooling,
         )
+    elif args.model_type == "resnet50_tgfs_v2":
+        model = ResNet50TGFSv2(
+            in_channels=1,
+            num_classes=1,
+            text_dim=args.text_dim,
+            vocab_size=args.vocab_size,
+            text_encoder_type=text_encoder_type,
+            text_backbone_path=args.cxr_bert_dir,
+            freeze_text_backbone=args.freeze_text_backbone,
+            visual_pretrained=args.visual_pretrained,
+            hh_drop_mode=args.hh_drop_mode,
+            low_level_hf_scale=args.low_level_hf_scale,
+            spatial_sharpen_power=args.spatial_sharpen_power,
+            use_deep_supervision=args.use_deep_supervision,
+            fusion_mode=args.fusion_mode,
+            unfreeze_last_n=args.unfreeze_last_n,
+            lora_r=args.lora_r,
+            freq_drop_bands=args.freq_drop_bands,
+            text_pooling=args.text_pooling,
+        )
+    elif args.model_type in {"lfaenet_tgfs_v3", "lfaenet_tgfs_v3_oldtext"}:
+        model_cls = LFAENetTGFSv3OldText if args.model_type == "lfaenet_tgfs_v3_oldtext" else LFAENetTGFSv3
+        model = model_cls(
+            in_channels=1,
+            num_classes=1,
+            text_dim=args.text_dim,
+            vocab_size=args.vocab_size,
+            text_encoder_type=text_encoder_type,
+            text_backbone_path=args.cxr_bert_dir,
+            freeze_text_backbone=args.freeze_text_backbone,
+            drop_hh_in_decoder=args.drop_hh_in_decoder,
+            hh_drop_mode=args.hh_drop_mode,
+            low_level_hf_scale=args.low_level_hf_scale,
+            learnable_low_level_hf_scale=args.learnable_low_level_hf_scale,
+            spatial_sharpen_power=args.spatial_sharpen_power,
+            learnable_spatial_sharpen=args.learnable_spatial_sharpen,
+            use_deep_supervision=args.use_deep_supervision,
+            fusion_mode=args.fusion_mode,
+            unfreeze_last_n=args.unfreeze_last_n,
+            lora_r=args.lora_r,
+            text_pooling=args.text_pooling,
+            encoder_text_fusion=args.encoder_text_fusion,
+            norm_type=args.norm_type,
+            conv_block_depth=args.conv_block_depth,
+            dropout_p=args.dropout_p,
+            grounding_n_heads=args.grounding_n_heads,
+            encoder_type=args.v3_encoder_type,
+            pretrained_image_encoder=args.pretrained_image_encoder,
+            freeze_encoder_bn=args.freeze_encoder_bn,
+        )
+    else:
+        raise ValueError(f"Unsupported model_type: {args.model_type}")
 
-    if args.model_type != "faenet" and args.use_cxr_bert:
+    if args.model_type in TEXT_MODEL_TYPES and args.use_cxr_bert:
         from transformers import AutoTokenizer
 
+        text_backbone_path = Path(args.cxr_bert_dir)
+        text_backbone_ref = str(text_backbone_path) if text_backbone_path.exists() else args.cxr_bert_dir
         tokenizer = AutoTokenizer.from_pretrained(
-            args.cxr_bert_dir,
+            text_backbone_ref,
             trust_remote_code=True,
-            local_files_only=True,
+            local_files_only=text_backbone_path.exists(),
         )
 
     return model.to(device), tokenizer
@@ -228,23 +317,33 @@ def compute_loss_with_aux(
     loss = criterion(logits, targets)
     if aux is None:
         return loss
-    loss = loss + aux_w_d4 * criterion(aux["d4"], targets)
-    loss = loss + aux_w_d3 * criterion(aux["d3"], targets)
-    loss = loss + aux_w_d2 * criterion(aux["d2"], targets)
+    if "d4" in aux:
+        loss = loss + aux_w_d4 * criterion(aux["d4"], targets)
+    if "d3" in aux:
+        loss = loss + aux_w_d3 * criterion(aux["d3"], targets)
+    if "d2" in aux:
+        loss = loss + aux_w_d2 * criterion(aux["d2"], targets)
     return loss
+
+
+def tensor_aux(aux: dict | None) -> dict[str, torch.Tensor] | None:
+    if aux is None:
+        return None
+    out = {k: v.float() for k, v in aux.items() if torch.is_tensor(v)}
+    return out or None
 
 
 def forward_model(batch, model, args, device: torch.device):
     image = batch["image"].to(device, non_blocking=True)
     mask = batch["mask"].to(device, non_blocking=True)
 
-    if args.model_type == "faenet":
+    if args.model_type in {"faenet", "resnet50_faenet"}:
         logits = model(image)
         aux = None
     else:
         input_ids = batch["input_ids"].to(device, non_blocking=True)
         attention_mask = batch["attention_mask"].to(device, non_blocking=True)
-        if args.model_type == "lfaenet_tgfs_v2" and args.use_deep_supervision:
+        if args.model_type in TGFS_V2_MODEL_TYPES and args.use_deep_supervision:
             logits, aux = model(image, token_ids=input_ids, attention_mask=attention_mask, return_aux=True)
         else:
             logits = model(image, token_ids=input_ids, attention_mask=attention_mask)
@@ -269,7 +368,7 @@ def train_one_epoch(model, loader, optimizer, criterion, device, scaler, args):
             criterion,
             logits.float(),
             mask.float(),
-            None if aux is None else {k: v.float() for k, v in aux.items()},
+            tensor_aux(aux),
             args.aux_w_d4,
             args.aux_w_d3,
             args.aux_w_d2,
@@ -324,7 +423,7 @@ def validate(model, loader, criterion, device, args, threshold: float = 0.5):
             criterion,
             logits.float(),
             mask.float(),
-            None if aux is None else {k: v.float() for k, v in aux.items()},
+            tensor_aux(aux),
             args.aux_w_d4,
             args.aux_w_d3,
             args.aux_w_d2,
@@ -361,7 +460,7 @@ def evaluate_thresholds(model, loader, criterion, device, args, thresholds: list
             criterion,
             logits.float(),
             mask.float(),
-            None if aux is None else {k: v.float() for k, v in aux.items()},
+            tensor_aux(aux),
             args.aux_w_d4,
             args.aux_w_d3,
             args.aux_w_d2,
@@ -394,6 +493,17 @@ def cosine_lr(base_lr: float, epoch: int, max_epochs: int, min_lr: float) -> flo
     return min_lr + 0.5 * (base_lr - min_lr) * (1.0 + np.cos(np.pi * t))
 
 
+def scheduled_lr(base_lr: float, min_lr: float, phase_epoch: int, total_epochs: int, args) -> float:
+    warmup_epochs = max(0, int(getattr(args, "lr_warmup_epochs", 0)))
+    if warmup_epochs > 0 and phase_epoch < warmup_epochs:
+        return min_lr + (base_lr - min_lr) * float(phase_epoch + 1) / float(warmup_epochs)
+    sched_epoch = max(0, phase_epoch - warmup_epochs)
+    sched_total = max(1, total_epochs - warmup_epochs)
+    if args.lr_scheduler == "cosine":
+        return cosine_lr(base_lr, sched_epoch, sched_total, min_lr)
+    return min_lr + poly_lr(base_lr - min_lr, sched_epoch, sched_total, args.poly_power)
+
+
 def append_log_line(path: Path, line: str) -> None:
     with path.open("a", encoding="utf-8") as f:
         f.write(line + "\n")
@@ -411,7 +521,13 @@ def load_checkpoint(path: Path, device: torch.device):
 def checkpoint_state_dict(model: nn.Module, args) -> dict[str, torch.Tensor]:
     state = model.state_dict()
     skip_frozen_text = (
-        args.model_type in {"lfaenet_tgfs", "lfaenet_tgfs_v2"}
+        args.model_type in {
+            "lfaenet_tgfs",
+            "lfaenet_tgfs_v2",
+            "lfaenet_tgfs_v2_oldtext",
+            "lfaenet_tgfs_v3",
+            "lfaenet_tgfs_v3_oldtext",
+        }
         and args.use_cxr_bert
         and args.freeze_text_backbone
         and int(getattr(args, "unfreeze_last_n", 0)) == 0
@@ -517,7 +633,16 @@ def main() -> None:
     parser.add_argument(
         "--model-type",
         type=str,
-        choices=["faenet", "lfaenet_tgfs", "lfaenet_tgfs_v2"],
+        choices=[
+            "faenet",
+            "resnet50_faenet",
+            "lfaenet_tgfs",
+            "lfaenet_tgfs_v2",
+            "lfaenet_tgfs_v2_oldtext",
+            "resnet50_tgfs_v2",
+            "lfaenet_tgfs_v3",
+            "lfaenet_tgfs_v3_oldtext",
+        ],
         default="lfaenet_tgfs_v2",
     )
     parser.add_argument("--epochs", type=int, default=50)
@@ -525,7 +650,9 @@ def main() -> None:
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--lr", type=float, default=0.02)
+    parser.add_argument("--encoder-lr", type=float, default=0.0)
     parser.add_argument("--min-lr", type=float, default=1e-5)
+    parser.add_argument("--lr-warmup-epochs", type=int, default=0)
     parser.add_argument("--poly-power", type=float, default=0.9)
     parser.add_argument(
         "--lr-scheduler",
@@ -541,6 +668,7 @@ def main() -> None:
     )
     parser.add_argument("--momentum", type=float, default=0.9)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--optim-eps", type=float, default=1e-8)
     parser.add_argument("--early-stop-patience", type=int, default=0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max-text-len", type=int, default=64)
@@ -562,6 +690,7 @@ def main() -> None:
     parser.add_argument("--prompt-mode", type=str, choices=PROMPT_MODE_CHOICES, default="native")
     parser.add_argument("--use-cxr-bert", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--cxr-bert-dir", type=str, default="BiomedVLP-CXR-BERT-specialized")
+    parser.add_argument("--text-pooling", type=str, choices=["mean", "cls", "attn"], default="mean")
     parser.add_argument("--freeze-text-backbone", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--unfreeze-last-n", type=int, default=0)
     parser.add_argument("--lora-r", type=int, default=0)
@@ -592,11 +721,28 @@ def main() -> None:
     parser.add_argument("--aux-w-d3", type=float, default=0.6)
     parser.add_argument("--aux-w-d2", type=float, default=0.8)
     parser.add_argument("--low-level-hf-scale", type=float, default=0.6)
+    parser.add_argument("--learnable-low-level-hf-scale", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--spatial-sharpen-power", type=float, default=2.0)
+    parser.add_argument("--learnable-spatial-sharpen", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--freq-drop-bands", type=str, default="none")
+    parser.add_argument(
+        "--visual-pretrained",
+        type=str,
+        choices=["none", "imagenet", "imagenet1k_v1", "imagenet1k_v2", "default"],
+        default="none",
+    )
+    parser.add_argument("--v3-encoder-type", type=str, choices=["from_scratch", "resnet50"], default="from_scratch")
+    parser.add_argument("--pretrained-image-encoder", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--freeze-encoder-bn", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--encoder-text-fusion", type=str, choices=["film", "cross_attn"], default="film")
+    parser.add_argument("--norm-type", type=str, choices=["bn", "gn"], default="bn")
+    parser.add_argument("--conv-block-depth", type=int, choices=[2, 3], default=2)
+    parser.add_argument("--dropout-p", type=float, default=0.0)
+    parser.add_argument("--grounding-n-heads", type=int, default=1)
 
     args = parser.parse_args()
-    if args.no_text and args.model_type != "faenet":
-        raise ValueError("--no-text is only supported with --model-type faenet")
+    if args.no_text and args.model_type not in VISUAL_ONLY_MODEL_TYPES:
+        raise ValueError("--no-text is only supported with visual-only model types")
     if not 0.0 < args.val_ratio < 1.0:
         raise ValueError("--val-ratio must be in (0, 1)")
     args.save_last_every = max(1, int(args.save_last_every))
@@ -608,20 +754,27 @@ def main() -> None:
         args.hh_drop_mode = "zero" if args.drop_hh_in_decoder else "keep"
     else:
         args.drop_hh_in_decoder = args.hh_drop_mode == "zero"
-    if args.model_type != "lfaenet_tgfs_v2" and args.hh_drop_mode == "learned":
-        raise ValueError("--hh-drop-mode learned is only implemented for --model-type lfaenet_tgfs_v2")
-    if args.model_type != "lfaenet_tgfs_v2" and (args.unfreeze_last_n > 0 or args.lora_r > 0):
-        raise ValueError("--unfreeze-last-n and --lora-r are only implemented for --model-type lfaenet_tgfs_v2")
+    if args.model_type not in TGFS_V2_MODEL_TYPES and args.hh_drop_mode == "learned":
+        raise ValueError("--hh-drop-mode learned is only implemented for TGFS-v2 model types")
+    if args.model_type not in TGFS_V2_MODEL_TYPES and (args.unfreeze_last_n > 0 or args.lora_r > 0):
+        raise ValueError("--unfreeze-last-n and --lora-r are only implemented for TGFS-v2 model types")
     if not args.use_cxr_bert and (args.unfreeze_last_n > 0 or args.lora_r > 0):
         raise ValueError("--unfreeze-last-n/--lora-r require --use-cxr-bert")
     if args.spatial_sharpen_power <= 0:
         raise ValueError("--spatial-sharpen-power must be positive")
     if args.grad_clip_norm < 0:
         raise ValueError("--grad-clip-norm must be non-negative")
+    if args.encoder_lr < 0:
+        raise ValueError("--encoder-lr must be non-negative")
+    args.lr_warmup_epochs = max(0, int(args.lr_warmup_epochs))
+    if args.dropout_p < 0.0 or args.dropout_p >= 1.0:
+        raise ValueError("--dropout-p must be in [0, 1)")
+    if args.grounding_n_heads < 1:
+        raise ValueError("--grounding-n-heads must be >= 1")
     set_seed(args.seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    args.use_amp = bool(args.use_amp and device.type == "cuda" and args.model_type != "faenet")
+    args.use_amp = bool(args.use_amp and device.type == "cuda" and args.model_type not in VISUAL_ONLY_MODEL_TYPES)
 
     model, tokenizer = create_model(args, device)
 
@@ -658,11 +811,11 @@ def main() -> None:
         val_ds = Subset(train_full_ds, val_idx)
 
     collate_fn = TextSegCollator(
-        tokenizer=tokenizer if args.model_type != "faenet" else None,
+        tokenizer=tokenizer if args.model_type in TEXT_MODEL_TYPES else None,
         max_length=args.max_text_len,
         prompt_mode=args.prompt_mode,
         seed=args.seed,
-        simple_vocab_size=args.vocab_size if args.model_type != "faenet" and tokenizer is None else None,
+        simple_vocab_size=args.vocab_size if args.model_type in TEXT_MODEL_TYPES and tokenizer is None else None,
     )
 
     train_loader = DataLoader(
@@ -685,15 +838,56 @@ def main() -> None:
     )
 
     criterion = SegLoss()
+    use_separate_encoder_lr = (
+        args.encoder_lr > 0
+        and args.model_type == "lfaenet_tgfs_v3"
+        and args.v3_encoder_type == "resnet50"
+        and hasattr(model, "image_encoder")
+    )
+    if use_separate_encoder_lr:
+        encoder_params = [p for p in model.image_encoder.parameters() if p.requires_grad]
+        encoder_param_ids = {id(p) for p in encoder_params}
+        other_params = [p for p in model.parameters() if p.requires_grad and id(p) not in encoder_param_ids]
+        encoder_min_lr = args.min_lr * (args.encoder_lr / max(args.lr, 1e-12))
+        param_groups = [
+            {
+                "params": encoder_params,
+                "lr": args.encoder_lr,
+                "weight_decay": args.weight_decay,
+                "_base_lr": args.encoder_lr,
+                "_min_lr": encoder_min_lr,
+                "_group_name": "image_encoder",
+            },
+            {
+                "params": other_params,
+                "lr": args.lr,
+                "weight_decay": args.weight_decay,
+                "_base_lr": args.lr,
+                "_min_lr": args.min_lr,
+                "_group_name": "main",
+            },
+        ]
+    else:
+        param_groups = [
+            {
+                "params": [p for p in model.parameters() if p.requires_grad],
+                "lr": args.lr,
+                "weight_decay": args.weight_decay,
+                "_base_lr": args.lr,
+                "_min_lr": args.min_lr,
+                "_group_name": "main",
+            }
+        ]
     if args.optimizer == "adamw":
         optimizer = AdamW(
-            model.parameters(),
+            param_groups,
             lr=args.lr,
             weight_decay=args.weight_decay,
+            eps=args.optim_eps,
         )
     else:
         optimizer = SGD(
-            model.parameters(),
+            param_groups,
             lr=args.lr,
             momentum=args.momentum,
             weight_decay=args.weight_decay,
@@ -757,12 +951,11 @@ def main() -> None:
 
     for epoch in range(start_epoch, end_epoch + 1):
         phase_epoch = epoch - start_epoch
-        if args.lr_scheduler == "cosine":
-            lr = cosine_lr(base_phase_lr, phase_epoch, total_phase_epochs, args.min_lr)
-        else:
-            lr = poly_lr(base_phase_lr, phase_epoch, total_phase_epochs, args.poly_power)
         for pg in optimizer.param_groups:
-            pg["lr"] = lr
+            base_lr = float(pg.get("_base_lr", base_phase_lr))
+            min_lr = float(pg.get("_min_lr", args.min_lr))
+            pg["lr"] = scheduled_lr(base_lr, min_lr, phase_epoch, total_phase_epochs, args)
+        lr = optimizer.param_groups[-1]["lr"]
 
         train_stats = train_one_epoch(
             model=model,

@@ -1,0 +1,18 @@
+{
+  "dataset": "QaTa-COV19-v2",
+  "model": "FMISeg legacy checkpoint",
+  "fmiseg_root": "D:\\Documents\\LMIS\\FMISeg",
+  "legacy_commit": "c22b6d7",
+  "checkpoint": "D:\\Documents\\LMIS\\FMISeg\\save_model\\last.ckpt",
+  "threshold": 0.5,
+  "num_images": 1,
+  "first_branch_per_image_dice": 0.7823648452758789,
+  "first_branch_per_image_iou": 0.6425281167030334,
+  "first_branch_global_dice": 0.7823648286475702,
+  "first_branch_global_iou": 0.6425281127460691,
+  "ensemble_per_image_dice": 0.8055221438407898,
+  "ensemble_per_image_iou": 0.6743717789649963,
+  "ensemble_global_dice": 0.8055221554306158,
+  "ensemble_global_iou": 0.6743717843804062,
+  "note": "Original FMISeg wrapper evaluated the first branch only; ensemble averages the two branch probabilities."
+}

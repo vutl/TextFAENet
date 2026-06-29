@@ -1,10 +1,47 @@
 from __future__ import annotations
 
+import re
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from .wavelet import HaarDWT2D, HaarIDWT2D
+
+
+FREQ_BANDS = {"ll", "lh", "hl", "hh"}
+
+
+def normalize_freq_drop_bands(drop_bands: str | None) -> frozenset[str]:
+    if drop_bands is None:
+        return frozenset()
+    if drop_bands.strip().lower() in {"", "none", "keep"}:
+        return frozenset()
+    bands = {x for x in re.split(r"[,;+\s]+", drop_bands.strip().lower()) if x}
+    unknown = bands - FREQ_BANDS
+    if unknown:
+        raise ValueError(f"Unsupported frequency bands to drop: {sorted(unknown)}")
+    return frozenset(bands)
+
+
+def apply_freq_drop(
+    ll: torch.Tensor,
+    lh: torch.Tensor,
+    hl: torch.Tensor,
+    hh: torch.Tensor,
+    drop_bands: frozenset[str],
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    if not drop_bands:
+        return ll, lh, hl, hh
+    if "ll" in drop_bands:
+        ll = torch.zeros_like(ll)
+    if "lh" in drop_bands:
+        lh = torch.zeros_like(lh)
+    if "hl" in drop_bands:
+        hl = torch.zeros_like(hl)
+    if "hh" in drop_bands:
+        hh = torch.zeros_like(hh)
+    return ll, lh, hl, hh
 
 
 class ConvBlock(nn.Module):
@@ -143,8 +180,10 @@ class FreqA(nn.Module):
         reduction: int = 16,
         use_attention: bool = True,
         attn_heads: int = 4,
+        freq_drop_bands: str | None = None,
     ) -> None:
         super().__init__()
+        self.freq_drop_bands = normalize_freq_drop_bands(freq_drop_bands)
         self.dwt = HaarDWT2D()
         self.idwt = HaarIDWT2D()
 
@@ -159,12 +198,14 @@ class FreqA(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         ll, lh, hl, hh = self.dwt(x)
+        ll, lh, hl, hh = apply_freq_drop(ll, lh, hl, hh, self.freq_drop_bands)
         ll = self.icca_ll(ll)
         lh = self.icca_lh(lh)
         hl = self.icca_hl(hl)
         hh = self.icca_hh(hh)
 
         ll, lh, hl, hh = self.ccca(ll, lh, hl, hh)
+        ll, lh, hl, hh = apply_freq_drop(ll, lh, hl, hh, self.freq_drop_bands)
         f_agg = torch.cat([ll, lh, hl, hh], dim=1)
         f_mix = self.mixer(f_agg)
         ll, lh, hl, hh = torch.chunk(f_mix, 4, dim=1)

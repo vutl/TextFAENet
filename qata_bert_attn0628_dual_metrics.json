@@ -1,0 +1,28 @@
+[
+  {
+    "run": "qata_bert_attn0628_qata_cxrbert_v3_both_crossattn_keep_seed42",
+    "checkpoint": "best.pt",
+    "checkpoint_epoch": 16,
+    "threshold": 0.35,
+    "num_images": 2113,
+    "per_image_dice": 0.8049238051340423,
+    "per_image_dice_std": 0.2018735990519576,
+    "per_image_dice_median": 0.8708847761154175,
+    "per_image_iou": 0.7113551641056448,
+    "per_image_iou_std": 0.22875481276923873,
+    "per_image_iou_median": 0.7712984085083008,
+    "global_dice": 0.8893480840806771,
+    "global_iou": 0.8007442037720183,
+    "old_final_dice": 0.8049376925950015,
+    "old_final_iou": 0.71132160590113,
+    "inference_amp": false,
+    "per_image_csv": "runs\\qata_bert_attn0628_qata_cxrbert_v3_both_crossattn_keep_seed42\\test_per_image_metrics.csv",
+    "model_type": "lfaenet_tgfs_v3",
+    "visual_encoder": "resnet50",
+    "text_encoder": "cxr_bert",
+    "fusion_mode": "both",
+    "hh_drop_mode": "keep",
+    "legacy_state_remapped": 0,
+    "legacy_wavelet_buffers_dropped": 0
+  }
+]

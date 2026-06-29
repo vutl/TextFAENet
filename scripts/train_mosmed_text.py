@@ -212,15 +212,18 @@ def create_model(args, device: torch.device):
             fusion_mode=args.fusion_mode,
             unfreeze_last_n=args.unfreeze_last_n,
             lora_r=args.lora_r,
+            text_pooling=args.text_pooling,
         )
 
     if args.model_type != "faenet" and args.use_cxr_bert:
         from transformers import AutoTokenizer
 
+        text_backbone_path = Path(args.cxr_bert_dir)
+        text_backbone_ref = str(text_backbone_path) if text_backbone_path.exists() else args.cxr_bert_dir
         tokenizer = AutoTokenizer.from_pretrained(
-            args.cxr_bert_dir,
+            text_backbone_ref,
             trust_remote_code=True,
-            local_files_only=True,
+            local_files_only=text_backbone_path.exists(),
         )
 
     return model.to(device), tokenizer
@@ -671,6 +674,7 @@ def main() -> None:
     parser.add_argument("--prompt-mode", type=str, choices=PROMPT_MODE_CHOICES, default="native")
     parser.add_argument("--use-cxr-bert", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--cxr-bert-dir", type=str, default="BiomedVLP-CXR-BERT-specialized")
+    parser.add_argument("--text-pooling", type=str, choices=["mean", "cls", "attn"], default="mean")
     parser.add_argument("--freeze-text-backbone", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--unfreeze-last-n", type=int, default=0)
     parser.add_argument("--lora-r", type=int, default=0)

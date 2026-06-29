@@ -1,7 +1,15 @@
 runs/
 BiomedVLP-CXR-BERT-specialized/pytorch_model.bin
+BiomedVLP-CXR-BERT-specialized/
 datasets/
 logs/
 paper_figures/
 .hf_cache/
+.torch_cache/
+.fmiseg_legacy_eval/
+.agents/
+external_metrics/
+generated_figures/
+__pycache__/
+*.py[cod]
 *.tmp
