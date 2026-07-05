@@ -191,6 +191,7 @@ def select_cases(
     min_target_dice: float,
     min_margin: float,
     min_baseline_dice: float,
+    max_other_dice: float | None,
     min_target_pixels: float,
     max_target_pixels: float,
 ) -> list[dict]:
@@ -209,6 +210,8 @@ def select_cases(
             continue
         target_dice = float(target["dice"])
         margin = target_dice - other
+        if max_other_dice is not None and other > max_other_dice:
+            continue
         rows.append(
             {
                 "mask_name": mask_name,
@@ -287,6 +290,7 @@ def render(
     title: str,
     subtitle: str,
     row_labels: bool,
+    show_gt_area: bool,
 ) -> None:
     headers = ["Input", "GT", *[spec.label for spec in specs], f"Error ({target_label})"]
     gap = 12
@@ -321,7 +325,8 @@ def render(
         x = x0
         draw_tile(img, draw, base, x, y, tile)
         x += tile + gap
-        draw_tile(img, draw, overlay_mask(base, gt, PALETTE["gt"], alpha=0.55), x, y, tile, score=f"{gt.mean()*100:.1f}%")
+        gt_score = f"{gt.mean()*100:.1f}%" if show_gt_area else None
+        draw_tile(img, draw, overlay_mask(base, gt, PALETTE["gt"], alpha=0.55), x, y, tile, score=gt_score)
         x += tile + gap
 
         scores = {}
@@ -384,6 +389,7 @@ def main() -> None:
     parser.add_argument("--title", default="QaTa-COV19 qualitative comparison")
     parser.add_argument("--subtitle", default="Cases are selected where the target model has the strongest per-image Dice margin.")
     parser.add_argument("--no-row-labels", action="store_true")
+    parser.add_argument("--show-gt-area", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--min-target-dice", type=float, default=0.78)
     parser.add_argument("--min-margin", type=float, default=0.03)
     parser.add_argument(
@@ -392,11 +398,21 @@ def main() -> None:
         default=0.0,
         help="Optional fairness filter: every loaded baseline must have at least this Dice on selected cases.",
     )
+    parser.add_argument(
+        "--max-other-dice",
+        type=float,
+        default=None,
+        help="Optional contrast filter: reject cases where any non-target model exceeds this Dice.",
+    )
     parser.add_argument("--min-target-pixels", type=float, default=250.0)
     parser.add_argument("--max-target-pixels", type=float, default=25000.0)
     parser.add_argument("--threshold", type=float, default=None, help="Optional override threshold for Text-FAENet runs.")
     parser.add_argument("--out-dir", type=Path, default=ROOT / "generated_figures" / "qata_external_qualitative")
     args = parser.parse_args()
+    if args.subtitle is not None and args.subtitle.strip().lower() in {"", "none", "null", "-"}:
+        args.subtitle = ""
+    if args.title is not None and args.title.strip().lower() in {"", "none", "null", "-"}:
+        args.title = ""
     if not args.out_dir.is_absolute():
         args.out_dir = ROOT / args.out_dir
 
@@ -451,6 +467,7 @@ def main() -> None:
         min_target_dice=args.min_target_dice,
         min_margin=args.min_margin,
         min_baseline_dice=args.min_baseline_dice,
+        max_other_dice=args.max_other_dice,
         min_target_pixels=args.min_target_pixels,
         max_target_pixels=args.max_target_pixels,
     )
@@ -472,6 +489,7 @@ def main() -> None:
         title=args.title,
         subtitle=args.subtitle,
         row_labels=not args.no_row_labels,
+        show_gt_area=args.show_gt_area,
     )
     manifest = {
         "loaded_models": [spec.label for spec in specs],
