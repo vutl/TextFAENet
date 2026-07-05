@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from src.modules.blocks import ConvBlock, FreqA
+from src.models.lfaenet_tgfs_v2 import ConvBlock, FreqA
 
 
 class DecoderStage(nn.Module):
@@ -35,38 +35,67 @@ class FAENet(nn.Module):
         channels: tuple[int, int, int, int] = (64, 128, 256, 512),
         bottleneck_channels: int = 768,
         use_attention_in_shallow: bool = False,
+        encoder_type: str = "from_scratch",
+        pretrained_image_encoder: bool = True,
+        freeze_encoder_bn: bool = True,
     ) -> None:
         super().__init__()
-        c1, c2, c3, c4 = channels
+        self.encoder_type = encoder_type
 
-        self.stem = nn.Sequential(
-            nn.Conv2d(in_channels, c1, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(c1),
-            nn.ReLU(inplace=True),
-        )
-        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
-
-        self.enc1 = nn.Sequential(ConvBlock(c1, c1), FreqA(c1, use_attention=use_attention_in_shallow))
-
-        self.enc2 = nn.Sequential(ConvBlock(c1, c2), FreqA(c2, use_attention=False))
-
-        self.enc3 = nn.Sequential(ConvBlock(c2, c3), FreqA(c3, use_attention=False))
-
-        self.enc4 = nn.Sequential(ConvBlock(c3, c4), FreqA(c4, use_attention=True))
-
-        self.bottleneck = nn.Sequential(
-            ConvBlock(c4, bottleneck_channels),
-            FreqA(bottleneck_channels, use_attention=True),
-        )
-
-        self.dec4 = DecoderStage(bottleneck_channels, c4, c4, use_attention=True)
-        self.dec3 = DecoderStage(c4, c3, c3, use_attention=False)
-        self.dec2 = DecoderStage(c3, c2, c2, use_attention=False)
-        self.dec1 = DecoderStage(c2, c1, c1, use_attention=use_attention_in_shallow)
-
-        self.head = nn.Conv2d(c1, num_classes, kernel_size=1)
+        if encoder_type == "resnet50":
+            from src.models.lfaenet_tgfs_v2 import ResNet50ImageEncoder
+            self.image_encoder = ResNet50ImageEncoder(
+                in_channels=in_channels,
+                pretrained=pretrained_image_encoder,
+                freeze_bn=freeze_encoder_bn,
+            )
+            r0, r1, r2, r3, r4 = self.image_encoder.channels_out  # 64, 256, 512, 1024, 2048
+            self.bottleneck = nn.Sequential(
+                ConvBlock(r4, bottleneck_channels),
+                FreqA(bottleneck_channels, use_attention=True),
+            )
+            self.dec4 = DecoderStage(bottleneck_channels, r3, 512, use_attention=True)
+            self.dec3 = DecoderStage(512, r2, 256, use_attention=False)
+            self.dec2 = DecoderStage(256, r1, 128, use_attention=False)
+            self.dec1 = DecoderStage(128, r0, 64, use_attention=use_attention_in_shallow)
+            self.final_refine = ConvBlock(64, 64)
+            self.head = nn.Conv2d(64, num_classes, kernel_size=1)
+        else:
+            c1, c2, c3, c4 = channels
+            self.stem = nn.Sequential(
+                nn.Conv2d(in_channels, c1, kernel_size=3, padding=1, bias=False),
+                nn.BatchNorm2d(c1),
+                nn.ReLU(inplace=True),
+            )
+            self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+            self.enc1 = nn.Sequential(ConvBlock(c1, c1), FreqA(c1, use_attention=use_attention_in_shallow))
+            self.enc2 = nn.Sequential(ConvBlock(c1, c2), FreqA(c2, use_attention=False))
+            self.enc3 = nn.Sequential(ConvBlock(c2, c3), FreqA(c3, use_attention=False))
+            self.enc4 = nn.Sequential(ConvBlock(c3, c4), FreqA(c4, use_attention=True))
+            self.bottleneck = nn.Sequential(
+                ConvBlock(c4, bottleneck_channels),
+                FreqA(bottleneck_channels, use_attention=True),
+            )
+            self.dec4 = DecoderStage(bottleneck_channels, c4, c4, use_attention=True)
+            self.dec3 = DecoderStage(c4, c3, c3, use_attention=False)
+            self.dec2 = DecoderStage(c3, c2, c2, use_attention=False)
+            self.dec1 = DecoderStage(c2, c1, c1, use_attention=use_attention_in_shallow)
+            self.head = nn.Conv2d(c1, num_classes, kernel_size=1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.encoder_type == "resnet50":
+            s0, s1, s2, s3, s4 = self.image_encoder(x)
+            b = self.bottleneck(s4)
+            d4 = self.dec4(b, s3)
+            d3 = self.dec3(d4, s2)
+            d2 = self.dec2(d3, s1)
+            d1 = self.dec1(d2, s0)
+            # ResNet stem halves spatial resolution; restore to input size.
+            if d1.shape[-2:] != x.shape[-2:]:
+                d1 = F.interpolate(d1, size=x.shape[-2:], mode="bilinear", align_corners=False)
+            d1 = self.final_refine(d1)
+            return self.head(d1)
+
         x0 = self.stem(x)
         e1 = self.enc1(x0)
 

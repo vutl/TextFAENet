@@ -40,10 +40,18 @@ class QaTaCOV19Dataset(Dataset):
         self.use_text = use_text
         self.max_samples = max_samples
 
-        split_dir = self.root / ("Train" if split == "train" else "Test")
-        self.images_dir = split_dir / "Images"
-        self.masks_dir = split_dir / "GTs"
-        self.prompt_csv = self.root / "prompt" / f"{split}.csv"
+        split_candidates = [
+            self.root / ("Train Set" if split == "train" else "Test Set"),
+            self.root / ("Train" if split == "train" else "Test"),
+        ]
+        split_dir = next((p for p in split_candidates if p.exists()), split_candidates[0])
+        self.images_dir = split_dir / "images"
+        self.masks_dir = split_dir / "masks"
+        prompt_candidates = [
+            self.root / "prompt" / f"{split}.csv",
+            split_dir / ("Train_text_for_Covid19.csv" if split == "train" else "Test_text_for_Covid19.csv"),
+        ]
+        self.prompt_csv = next((p for p in prompt_candidates if p.exists()), prompt_candidates[0])
 
         if not self.images_dir.exists() or not self.masks_dir.exists():
             raise FileNotFoundError(
@@ -62,10 +70,10 @@ class QaTaCOV19Dataset(Dataset):
     def _build_samples(self) -> list[QaTaSample]:
         if not self.use_text:
             samples: list[QaTaSample] = []
-            for mask_path in sorted(self.masks_dir.glob("mask_*")):
+            for mask_path in sorted(self.masks_dir.glob("*")):
                 if not mask_path.is_file():
                     continue
-                image_name = mask_path.name[len("mask_") :]
+                image_name = mask_path.name
                 image_path = self.images_dir / image_name
                 if not image_path.exists():
                     continue
@@ -85,17 +93,23 @@ class QaTaCOV19Dataset(Dataset):
         descriptions: dict[str, str] = {}
         with self.prompt_csv.open("r", encoding="utf-8", newline="") as f:
             reader = csv.DictReader(f)
-            if "Image" not in reader.fieldnames or "Description" not in reader.fieldnames:
-                raise ValueError(f"CSV must contain Image and Description columns: {self.prompt_csv}")
+            fieldnames = set(reader.fieldnames or [])
+            if {"Image", "Description"}.issubset(fieldnames):
+                image_key = "Image"
+                text_key = "Description"
+            elif {"image", "text"}.issubset(fieldnames):
+                image_key = "image"
+                text_key = "text"
+            else:
+                raise ValueError(
+                    f"CSV must contain either Image/Description or image/text columns: {self.prompt_csv}"
+                )
             for row in reader:
-                descriptions[row["Image"]] = row["Description"]
+                descriptions[row[image_key]] = row[text_key]
 
         samples: list[QaTaSample] = []
         for mask_name, desc in descriptions.items():
-            if not mask_name.startswith("mask_"):
-                continue
-
-            image_name = mask_name[len("mask_") :]
+            image_name = mask_name
             image_path = self.images_dir / image_name
             mask_path = self.masks_dir / mask_name
             if not image_path.exists() or not mask_path.exists():
