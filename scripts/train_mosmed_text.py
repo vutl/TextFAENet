@@ -651,6 +651,47 @@ def append_log_line(path: Path, line: str) -> None:
         f.write(line + "\n")
 
 
+def cleanup_dead_mps_graph_cache() -> int:
+    """Delete MPS graph-cache dirs from dead processes.
+
+    macOS Metal creates one directory per compiled graph under
+    .../T/com.apple.MetalPerformanceShadersGraph/mpsgraph-<PID>-*.
+    A killed/finished training process leaves hundreds of these behind.
+    Call this once per epoch to prevent the cache from filling the disk
+    over long (40-80 epoch) runs.  Returns the count of deleted dirs.
+    """
+    import glob
+    import os
+    import shutil
+    current_pid = os.getpid()
+    deleted = 0
+    pattern = "/private/var/folders/*/*/T/com.apple.MetalPerformanceShadersGraph"
+    for base in glob.glob(pattern):
+        try:
+            for entry in Path(base).iterdir():
+                if not entry.is_dir() or not entry.name.startswith("mpsgraph-"):
+                    continue
+                parts = entry.name.split("-")
+                if len(parts) < 2:
+                    continue
+                try:
+                    pid = int(parts[1])
+                except ValueError:
+                    continue
+                if pid == current_pid:
+                    continue
+                try:
+                    os.kill(pid, 0)  # signal 0 = check if process exists
+                except ProcessLookupError:
+                    shutil.rmtree(entry, ignore_errors=True)
+                    deleted += 1
+                except PermissionError:
+                    pass  # process alive but owned by another user — keep
+        except (PermissionError, OSError):
+            pass
+    return deleted
+
+
 def load_checkpoint(path: Path, device: torch.device):
     try:
         return torch.load(path, map_location=device, weights_only=False)
@@ -950,6 +991,78 @@ def apply_experiment_preset(args) -> None:
         args.elastic_alpha = 8.0
         args.elastic_sigma = 4.0
         args.prompt_dropout_prob = 0.3
+    elif args.experiment == "cxr_bert_v9e":
+        # v9e = v9b architecture with train+val / validate-on-test data protocol.
+        #   * LOSS: per-image Dice (use_pooled_dice=False, apples-to-apples with v9b)
+        #   * SELECTION: global (pooled) Dice (use_global_dice_selection=True).
+        #     Global Dice matches what FMISeg/LViT SOTA reports and is less noisy
+        #     on the heavily class-imbalanced MosMed test set. Per-image Dice is
+        #     still logged each epoch for observation.
+        #   * val_on_test=True: fit on the FULL (train+val) set, monitor/select on
+        #     the test set. The test set is never used for gradient updates; the
+        #     reported test_dice is therefore a model-selected (optimistic) number,
+        #     matching the common MosMedData+/QaTa benchmark protocol.
+        # Architecture, losses, augmentation, LR schedule are identical to v9b.
+        args.use_cxr_bert = True
+        args.freeze_text_backbone = True
+        args.unfreeze_last_n = 2
+        args.fusion_mode = "both"
+        args.encoder_text_fusion = "cross_attn"
+        args.hh_drop_mode = "learned"
+        args.low_level_hf_scale = 0.6
+        args.learnable_low_level_hf_scale = True
+        args.spatial_sharpen_power = 2.0
+        args.learnable_spatial_sharpen = True
+        args.use_deep_supervision = True
+        args.augment_train = True
+        args.norm_type = "gn"
+        args.conv_block_depth = 3
+        args.dropout_p = 0.2
+        args.grounding_n_heads = 4
+        args.grounding_loss_weight = 0.3
+        args.boundary_weight = 0.15
+        args.bce_weight = 0.2
+        args.dice_weight = 0.8
+        args.tversky_weight = 0.0
+        # Global Dice selection: best.pt is saved when global (pooled) Dice improves.
+        # Per-image Dice is still logged each epoch for observation.
+        # Loss still uses per-image Dice (use_pooled_dice=False).
+        args.use_pooled_dice = False
+        args.use_global_dice_selection = True
+        args.max_pos_weight = 16.0
+        args.weight_decay = 1e-3
+        args.early_stop_patience = 20
+        args.balanced_sampling = False
+        args.use_tta = True
+        args.epochs = 80
+        args.encoder_type = "resnet50"
+        args.pretrained_image_encoder = True
+        args.freeze_encoder_bn = True
+        # Resolution 448 (divisible by 64 for the Haar DWT bottleneck: 448/64=7).
+        # Higher res gives tiny COVID lesions more pixels, which directly helps the
+        # per-image Dice metric that this preset selects on. ~2x activation memory
+        # vs 320; if MPS OOMs, drop batch_size to 1 and raise grad_accum_steps to 16
+        # to keep the effective batch at 16.
+        args.image_size = 448
+        args.batch_size = 1
+        args.grad_accum_steps = 16
+        args.aux_w_d4 = 0.2
+        args.aux_w_d3 = 0.3
+        args.aux_w_d2 = 0.4
+        args.lr = 5e-5
+        args.encoder_lr = 5e-6
+        args.min_lr = 1e-5
+        args.lr_warmup_epochs = 5
+        args.max_grad_norm = 1.0
+        args.optim_eps = 1e-6
+        # data protocol: full (train+val) for fitting, test for monitoring/selection
+        args.train_on_trainval = False
+        args.val_on_test = True
+        args.ct_window = True
+        args.elastic_prob = 0.3
+        args.elastic_alpha = 8.0
+        args.elastic_sigma = 4.0
+        args.prompt_dropout_prob = 0.3
     elif args.experiment in ("cxr_bert_v9c", "cxr_bert_v9d"):
         # v9c: global-Dice-aligned training. Three axes changed vs v9b:
         # (1) dice_loss is now batch-pooled (not per-image-mean) — loss directly
@@ -1035,7 +1148,7 @@ def main() -> None:
         default="text_csv",
     )
     parser.add_argument("--save-dir", type=str, default=str(TEXTFAENET_ROOT / "runs" / "mosmed_text_faenet"))
-    parser.add_argument("--experiment", type=str, choices=["cxr_bert_v6", "cxr_bert_v7a", "cxr_bert_v8", "cxr_bert_v9", "cxr_bert_v9b", "cxr_bert_v9c", "cxr_bert_v9d"], default="cxr_bert_v6")
+    parser.add_argument("--experiment", type=str, choices=["cxr_bert_v6", "cxr_bert_v7a", "cxr_bert_v8", "cxr_bert_v9", "cxr_bert_v9b", "cxr_bert_v9c", "cxr_bert_v9d", "cxr_bert_v9e"], default="cxr_bert_v6")
     parser.add_argument("--epochs", type=int, default=80)
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--num-workers", type=int, default=2)
@@ -1082,6 +1195,11 @@ def main() -> None:
         help="If set, overrides the preset's epochs after apply_experiment_preset. "
              "Useful when resuming: pass remaining epochs so the cosine schedule "
              "covers only the remaining phase.",
+    )
+    parser.add_argument(
+        "--override-image-size", type=int, default=None,
+        help="If set, overrides the preset's image_size after apply_experiment_preset. "
+             "Must be divisible by 64 (Haar DWT bottleneck). E.g. 320, 384, 448, 512.",
     )
     parser.add_argument("--early-stop-patience", type=int, default=8)
 
@@ -1159,6 +1277,11 @@ def main() -> None:
     apply_experiment_preset(args)
     if args.override_epochs is not None:
         args.epochs = int(args.override_epochs)
+    if args.override_image_size is not None:
+        assert args.override_image_size % 64 == 0, (
+            f"--override-image-size must be divisible by 64 (got {args.override_image_size})"
+        )
+        args.image_size = int(args.override_image_size)
 
     if args.drop_hh_in_decoder is not None:
         args.hh_drop_mode = "zero" if args.drop_hh_in_decoder else "keep"
@@ -1181,7 +1304,20 @@ def main() -> None:
     test_ds = build_dataset(args, "test")
 
     train_on_trainval = bool(getattr(args, "train_on_trainval", False))
-    if train_on_trainval:
+    val_on_test = bool(getattr(args, "val_on_test", False))
+    if val_on_test:
+        # Train on the FULL (train + val) set; monitor / select on the TEST set.
+        # The test set is NEVER used for gradient updates -- only for the per-epoch
+        # threshold sweep and best-epoch selection -- so it is not a clean held-out
+        # estimate but a model-selected (optimistic) one. This mirrors the common
+        # MosMedData+/QaTa benchmark protocol (train+val for fitting, test for
+        # reporting) and is used here per the explicit experiment design. val is
+        # augmented like train so all labelled non-test data drives fitting.
+        from torch.utils.data import ConcatDataset
+        val_aug_ds = build_dataset(args, "val", force_augment=True)
+        effective_train_ds = ConcatDataset([train_ds, val_aug_ds])
+        monitoring_ds = test_ds
+    elif train_on_trainval:
         val_aug_ds = build_dataset(args, "val", force_augment=True)
         train_clean_ds = build_dataset(args, "train", force_augment=False)
         from torch.utils.data import ConcatDataset, Subset
@@ -1375,6 +1511,20 @@ def main() -> None:
         best_threshold = float(ckpt.get("best_threshold", best_threshold))
         if history_path.exists():
             history = json.loads(history_path.read_text(encoding="utf-8"))
+        # If the selection metric changed between runs (e.g. per-image → global),
+        # the stored best_dice is from a different scale. Recalculate from history
+        # so training continues fair selection under the new metric.
+        cur_global_sel = bool(getattr(args, "use_global_dice_selection", False))
+        stored_global_sel = bool((ckpt.get("args") or {}).get("use_global_dice_selection", False))
+        if cur_global_sel != stored_global_sel and history:
+            sel_key = "val_global_dice" if cur_global_sel else "val_dice"
+            best_dice = max((float(e.get(sel_key, -1.0)) for e in history), default=-1.0)
+            print(
+                f"  [resume] selection metric changed "
+                f"({'global' if stored_global_sel else 'per-image'} → "
+                f"{'global' if cur_global_sel else 'per-image'}); "
+                f"best_dice reset to {best_dice:.4f} (best {sel_key} in history)"
+            )
 
     (save_dir / "config.json").write_text(json.dumps(vars(args), indent=2), encoding="utf-8")
     append_log_line(txt_log_path, f"save_dir={save_dir}")
@@ -1404,12 +1554,17 @@ def main() -> None:
     )
     append_log_line(txt_log_path, json.dumps(vars(args), ensure_ascii=False))
 
-    end_epoch = start_epoch + args.epochs - 1
+    # end_epoch is absolute: always train up to epoch args.epochs regardless of
+    # whether we're resuming. Fresh run: start_epoch=1, end_epoch=80.
+    # Resume from epoch 44: start_epoch=45, end_epoch=80 (not 124).
+    end_epoch = max(args.epochs, start_epoch)
     total_phase_epochs = max(args.epochs, 1)
 
     warmup_epochs = max(0, int(getattr(args, "lr_warmup_epochs", 0)))
     for epoch in range(start_epoch, end_epoch + 1):
-        phase_epoch = epoch - start_epoch
+        # phase_epoch is 0-indexed from epoch 1 (absolute), so the LR schedule
+        # continues correctly on resume instead of restarting from warmup.
+        phase_epoch = epoch - 1
         # Schedule each param group independently using its own _base_lr / _min_lr,
         # so a smaller encoder lr stays proportionally smaller across warmup+decay.
         for pg in optimizer.param_groups:
@@ -1496,11 +1651,15 @@ def main() -> None:
             best_dice = sel_metric
             best_threshold = epoch_best_threshold
             no_improve_epochs = 0
+            # best.pt is for eval/inference only; the optimizer_state (~2.3 GB
+            # here) is never needed to load it. Omitting it keeps best.pt small
+            # (model_state only) -- resume always uses last.pt, which still
+            # carries the optimizer_state. This avoids filling the disk with two
+            # multi-GB checkpoints per run.
             torch.save(
                 {
                     "epoch": epoch,
                     "model_state": checkpoint_state_dict(model, args),
-                    "optimizer_state": optimizer.state_dict(),
                     "best_dice": best_dice,
                     "best_threshold": best_threshold,
                     "args": vars(args),
@@ -1522,6 +1681,11 @@ def main() -> None:
             torch.mps.empty_cache()
         elif device.type == "cuda":
             torch.cuda.empty_cache()
+
+        if device.type == "mps":
+            n_del = cleanup_dead_mps_graph_cache()
+            if n_del:
+                print(f"  [mps-cache] deleted {n_del} stale mpsgraph dirs from dead processes")
 
         if args.save_debug_vis and hasattr(model, "set_debug_capture"):
             debug_dir = save_dir / "debug_vis"

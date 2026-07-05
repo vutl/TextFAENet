@@ -39,6 +39,10 @@ def _build_args_from_config(config: dict, cli_overrides) -> object:
         args.num_workers = cli_overrides.num_workers
     if cli_overrides.max_test_samples is not None:
         args.max_test_samples = cli_overrides.max_test_samples
+    if getattr(cli_overrides, "prompt_source", None) is not None:
+        args.prompt_source = cli_overrides.prompt_source
+    if getattr(cli_overrides, "fixed_prompt", None) is not None:
+        args.fixed_prompt = cli_overrides.fixed_prompt
     args.max_text_len = getattr(args, "max_text_len", 64)
     args.bce_weight = getattr(args, "bce_weight", 0.3)
     args.dice_weight = getattr(args, "dice_weight", 0.7)
@@ -69,6 +73,11 @@ def main() -> None:
     parser.add_argument("--max-test-samples", type=int, default=None)
     parser.add_argument("--no-tta", action="store_true",
                         help="Disable h-flip TTA (default: same TTA used during training)")
+    parser.add_argument("--prompt-source", dest="prompt_source", type=str, default=None,
+                        choices=["csv", "fixed"],
+                        help="csv = task-native prompts; fixed = replace every prompt with --fixed-prompt.")
+    parser.add_argument("--fixed-prompt", dest="fixed_prompt", type=str, default=None,
+                        help="Prompt text used when --prompt-source fixed (e.g. a class-name or descriptive prompt).")
     cli_args = parser.parse_args()
 
     run_dir = Path(cli_args.run_dir)
@@ -155,6 +164,8 @@ def main() -> None:
         "best_epoch": best_epoch,
         "ckpt_threshold": ckpt_threshold,
         "applied_threshold": cli_args.threshold,
+        "prompt_source": args.prompt_source,
+        "fixed_prompt": args.fixed_prompt if args.prompt_source == "fixed" else None,
         "tta": use_tta,
         "loss": float(test_stats["loss"]),
         "iou": float(test_stats["iou"]),
