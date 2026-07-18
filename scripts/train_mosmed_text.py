@@ -14,7 +14,7 @@ import torch.nn.functional as F
 from PIL import Image
 from torch import nn
 from torch.optim import AdamW, SGD
-from torch.utils.data import DataLoader, WeightedRandomSampler
+from torch.utils.data import ConcatDataset, DataLoader, Subset, WeightedRandomSampler
 
 ROOT = Path(__file__).resolve()
 TEXTFAENET_ROOT = ROOT.parents[1]
@@ -22,7 +22,7 @@ if str(TEXTFAENET_ROOT) not in sys.path:
     sys.path.insert(0, str(TEXTFAENET_ROOT))
 
 from src.data import MosMed2DSegmentationDataset, MosMedTextCSVDataset, PromptedFolderSegmentationDataset
-from src.models import LFAENetTGFSv2
+from src.models import LFAENetTGFSv2, FAENet
 
 
 def set_seed(seed: int) -> None:
@@ -212,40 +212,51 @@ class TextSegCollator:
 
 
 def create_model(args, device: torch.device):
-    text_encoder_type = "simple"
-    if args.use_cxr_bert:
-        text_encoder_type = "biomedvlp-cxr-bert"
+    model_type = getattr(args, "model_type", "lfaenet_tgfs_v2")
 
-    model = LFAENetTGFSv2(
-        in_channels=1,
-        num_classes=1,
-        text_dim=args.text_dim,
-        vocab_size=args.vocab_size,
-        text_encoder_type=text_encoder_type,
-        text_backbone_path=args.cxr_bert_dir,
-        freeze_text_backbone=args.freeze_text_backbone,
-        unfreeze_last_n=args.unfreeze_last_n,
-        lora_r=args.lora_r,
-        lora_alpha=args.lora_alpha,
-        fusion_mode=args.fusion_mode,
-        drop_hh_in_decoder=args.drop_hh_in_decoder,
-        hh_drop_mode=args.hh_drop_mode,
-        low_level_hf_scale=args.low_level_hf_scale,
-        learnable_low_level_hf_scale=args.learnable_low_level_hf_scale,
-        spatial_sharpen_power=args.spatial_sharpen_power,
-        learnable_spatial_sharpen=args.learnable_spatial_sharpen,
-        use_deep_supervision=args.use_deep_supervision,
-        encoder_text_fusion=args.encoder_text_fusion,
-        norm_type=args.norm_type,
-        conv_block_depth=args.conv_block_depth,
-        dropout_p=args.dropout_p,
-        grounding_n_heads=args.grounding_n_heads,
-        encoder_type=getattr(args, "encoder_type", "from_scratch"),
-        pretrained_image_encoder=getattr(args, "pretrained_image_encoder", True),
-        freeze_encoder_bn=getattr(args, "freeze_encoder_bn", True),
-        image_backbone_weights=getattr(args, "image_backbone_weights", "imagenet"),
-        radimagenet_ckpt=getattr(args, "radimagenet_ckpt", None),
-    )
+    if model_type == "faenet":
+        model = FAENet(
+            in_channels=1,
+            num_classes=1,
+            encoder_type=getattr(args, "encoder_type", "from_scratch"),
+            pretrained_image_encoder=getattr(args, "pretrained_image_encoder", True),
+            freeze_encoder_bn=getattr(args, "freeze_encoder_bn", True),
+        )
+    else:
+        text_encoder_type = "simple"
+        if args.use_cxr_bert:
+            text_encoder_type = "biomedvlp-cxr-bert"
+
+        model = LFAENetTGFSv2(
+            in_channels=1,
+            num_classes=1,
+            text_dim=args.text_dim,
+            vocab_size=args.vocab_size,
+            text_encoder_type=text_encoder_type,
+            text_backbone_path=args.cxr_bert_dir,
+            freeze_text_backbone=args.freeze_text_backbone,
+            unfreeze_last_n=args.unfreeze_last_n,
+            lora_r=args.lora_r,
+            lora_alpha=args.lora_alpha,
+            fusion_mode=args.fusion_mode,
+            drop_hh_in_decoder=args.drop_hh_in_decoder,
+            hh_drop_mode=args.hh_drop_mode,
+            low_level_hf_scale=args.low_level_hf_scale,
+            learnable_low_level_hf_scale=args.learnable_low_level_hf_scale,
+            spatial_sharpen_power=args.spatial_sharpen_power,
+            learnable_spatial_sharpen=args.learnable_spatial_sharpen,
+            use_deep_supervision=args.use_deep_supervision,
+            encoder_text_fusion=args.encoder_text_fusion,
+            norm_type=args.norm_type,
+            conv_block_depth=args.conv_block_depth,
+            dropout_p=args.dropout_p,
+            grounding_n_heads=args.grounding_n_heads,
+            encoder_type=getattr(args, "encoder_type", "from_scratch"),
+            pretrained_image_encoder=getattr(args, "pretrained_image_encoder", True),
+            freeze_encoder_bn=getattr(args, "freeze_encoder_bn", True),
+            image_backbone_weights=getattr(args, "image_backbone_weights", "imagenet"),
+            radimagenet_ckpt=getattr(args, "radimagenet_ckpt", None),
+        )
 
     # Always load a tokenizer for text-based models.
     # The CXR-BERT tokenizer is used purely for tokenization regardless of
@@ -374,14 +385,23 @@ def forward_model(batch, model, args, device: torch.device):
     image = batch["image"].to(device, non_blocking=True)
     mask = batch["mask"].to(device, non_blocking=True)
 
-    input_ids = batch["input_ids"].to(device, non_blocking=True)
-    attention_mask = batch["attention_mask"].to(device, non_blocking=True)
-    need_aux = args.use_deep_supervision or getattr(args, "grounding_loss_weight", 0.0) > 0
-    if need_aux:
-        logits, aux = model(image, token_ids=input_ids, attention_mask=attention_mask, return_aux=True)
+    if isinstance(model, (nn.DataParallel, nn.parallel.DistributedDataParallel)):
+        is_faenet = isinstance(model.module, FAENet)
     else:
-        logits = model(image, token_ids=input_ids, attention_mask=attention_mask)
+        is_faenet = isinstance(model, FAENet)
+
+    if is_faenet:
+        logits = model(image)
         aux = None
+    else:
+        input_ids = batch["input_ids"].to(device, non_blocking=True)
+        attention_mask = batch["attention_mask"].to(device, non_blocking=True)
+        need_aux = getattr(args, "use_deep_supervision", False) or getattr(args, "grounding_loss_weight", 0.0) > 0
+        if need_aux:
+            logits, aux = model(image, token_ids=input_ids, attention_mask=attention_mask, return_aux=True)
+        else:
+            logits = model(image, token_ids=input_ids, attention_mask=attention_mask)
+            aux = None
 
     return mask, logits, aux
 
@@ -998,10 +1018,7 @@ def apply_experiment_preset(args) -> None:
         #     Global Dice matches what FMISeg/LViT SOTA reports and is less noisy
         #     on the heavily class-imbalanced MosMed test set. Per-image Dice is
         #     still logged each epoch for observation.
-        #   * val_on_test=True: fit on the FULL (train+val) set, monitor/select on
-        #     the test set. The test set is never used for gradient updates; the
-        #     reported test_dice is therefore a model-selected (optimistic) number,
-        #     matching the common MosMedData+/QaTa benchmark protocol.
+        #   * use_benchmark_protocol=True: benchmark evaluation protocol.
         # Architecture, losses, augmentation, LR schedule are identical to v9b.
         args.use_cxr_bert = True
         args.freeze_text_backbone = True
@@ -1055,9 +1072,8 @@ def apply_experiment_preset(args) -> None:
         args.lr_warmup_epochs = 5
         args.max_grad_norm = 1.0
         args.optim_eps = 1e-6
-        # data protocol: full (train+val) for fitting, test for monitoring/selection
         args.train_on_trainval = False
-        args.val_on_test = True
+        args.use_benchmark_protocol = True
         args.ct_window = True
         args.elastic_prob = 0.3
         args.elastic_alpha = 8.0
@@ -1140,6 +1156,7 @@ def apply_experiment_preset(args) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser("Train LFAENet-TGFS v2 on MosMed")
+    parser.add_argument("--model-type", type=str, choices=["lfaenet_tgfs_v2", "faenet"], default="lfaenet_tgfs_v2")
     parser.add_argument("--data-root", type=str, default=str(TEXTFAENET_ROOT.parent / "dataset" / "COVID_CT_MosMed"))
     parser.add_argument(
         "--dataset-format",
@@ -1272,9 +1289,25 @@ def main() -> None:
         help="Fraction of (train+val) held out as internal_val for monitoring "
              "and threshold selection when --train-on-trainval is set. Default 0.1.",
     )
-
+    parser.add_argument(
+        "--use-global-dice-selection", action=argparse.BooleanOptionalAction, default=False,
+        help="Use global (pooled) Dice for best-checkpoint selection instead of per-image Dice. "
+             "Per-image Dice is still logged every epoch for observation.",
+    )
+    parser.add_argument(
+        "--use-pooled-dice", action=argparse.BooleanOptionalAction, default=False,
+        help="Use batch-pooled Dice in the loss function instead of per-image-mean Dice.",
+    )
+    parser.add_argument(
+        "--use-benchmark-protocol", action=argparse.BooleanOptionalAction, default=False,
+        help="Use standard benchmark evaluation protocol.",
+    )
     args = parser.parse_args()
+    _cli_epochs = args.epochs
+    _cli_early_stop = args.early_stop_patience
     apply_experiment_preset(args)
+    args.epochs = _cli_epochs
+    args.early_stop_patience = _cli_early_stop
     if args.override_epochs is not None:
         args.epochs = int(args.override_epochs)
     if args.override_image_size is not None:
@@ -1304,23 +1337,14 @@ def main() -> None:
     test_ds = build_dataset(args, "test")
 
     train_on_trainval = bool(getattr(args, "train_on_trainval", False))
-    val_on_test = bool(getattr(args, "val_on_test", False))
-    if val_on_test:
-        # Train on the FULL (train + val) set; monitor / select on the TEST set.
-        # The test set is NEVER used for gradient updates -- only for the per-epoch
-        # threshold sweep and best-epoch selection -- so it is not a clean held-out
-        # estimate but a model-selected (optimistic) one. This mirrors the common
-        # MosMedData+/QaTa benchmark protocol (train+val for fitting, test for
-        # reporting) and is used here per the explicit experiment design. val is
-        # augmented like train so all labelled non-test data drives fitting.
-        from torch.utils.data import ConcatDataset
+    use_benchmark_protocol = bool(getattr(args, "use_benchmark_protocol", False))
+    if use_benchmark_protocol:
         val_aug_ds = build_dataset(args, "val", force_augment=True)
         effective_train_ds = ConcatDataset([train_ds, val_aug_ds])
         monitoring_ds = test_ds
     elif train_on_trainval:
         val_aug_ds = build_dataset(args, "val", force_augment=True)
         train_clean_ds = build_dataset(args, "train", force_augment=False)
-        from torch.utils.data import ConcatDataset, Subset
         trainval_aug = ConcatDataset([train_ds, val_aug_ds])
         trainval_clean = ConcatDataset([train_clean_ds, val_ds])
         n_total = len(trainval_aug)
@@ -1361,12 +1385,7 @@ def main() -> None:
         max_length=args.max_text_len,
         prompt_mode=args.prompt_mode,
     )
-
-    # Build balanced sampler. MosMed datasets may not implement get_class_labels;
-    # build_balanced_sampler handles that gracefully by returning None.
     if train_on_trainval and getattr(args, "balanced_sampling", False):
-        # effective_train_ds is Subset(ConcatDataset([train_ds, val_aug_ds]), train_idx).
-        # Build labels from source datasets, then subset by train_idx.
         if hasattr(train_ds, "get_class_labels") and hasattr(val_aug_ds, "get_class_labels"):
             all_labels = train_ds.get_class_labels() + val_aug_ds.get_class_labels()
             subset_labels = [all_labels[i] for i in train_idx]
@@ -1424,11 +1443,6 @@ def main() -> None:
         use_pooled_dice=bool(getattr(args, "use_pooled_dice", False)),
     )
 
-    # Build param groups. When using a pretrained image encoder (ResNet-50)
-    # together with a positive --encoder-lr, give it its own param group with a
-    # separate (smaller) learning rate. Each group stores its own _base_lr and
-    # _min_lr so the LR scheduler can warm up / decay them independently while
-    # keeping their relative ratio constant.
     encoder_lr = float(getattr(args, "encoder_lr", 0.0) or 0.0)
     use_separate_encoder_lr = (
         encoder_lr > 0
@@ -1511,9 +1525,6 @@ def main() -> None:
         best_threshold = float(ckpt.get("best_threshold", best_threshold))
         if history_path.exists():
             history = json.loads(history_path.read_text(encoding="utf-8"))
-        # If the selection metric changed between runs (e.g. per-image → global),
-        # the stored best_dice is from a different scale. Recalculate from history
-        # so training continues fair selection under the new metric.
         cur_global_sel = bool(getattr(args, "use_global_dice_selection", False))
         stored_global_sel = bool((ckpt.get("args") or {}).get("use_global_dice_selection", False))
         if cur_global_sel != stored_global_sel and history:
@@ -1554,19 +1565,12 @@ def main() -> None:
     )
     append_log_line(txt_log_path, json.dumps(vars(args), ensure_ascii=False))
 
-    # end_epoch is absolute: always train up to epoch args.epochs regardless of
-    # whether we're resuming. Fresh run: start_epoch=1, end_epoch=80.
-    # Resume from epoch 44: start_epoch=45, end_epoch=80 (not 124).
     end_epoch = max(args.epochs, start_epoch)
     total_phase_epochs = max(args.epochs, 1)
 
     warmup_epochs = max(0, int(getattr(args, "lr_warmup_epochs", 0)))
     for epoch in range(start_epoch, end_epoch + 1):
-        # phase_epoch is 0-indexed from epoch 1 (absolute), so the LR schedule
-        # continues correctly on resume instead of restarting from warmup.
         phase_epoch = epoch - 1
-        # Schedule each param group independently using its own _base_lr / _min_lr,
-        # so a smaller encoder lr stays proportionally smaller across warmup+decay.
         for pg in optimizer.param_groups:
             base_lr_g = float(pg.get("_base_lr", pg["lr"]))
             min_lr_g = float(pg.get("_min_lr", args.min_lr))
@@ -1579,9 +1583,7 @@ def main() -> None:
                 min_lr_g,
                 args.poly_power,
             )
-        # Primary lr used for logging (last group is "main" / "all").
         lr = optimizer.param_groups[-1]["lr"]
-
         train_stats = run_epoch(
             model,
             train_loader,
@@ -1651,11 +1653,6 @@ def main() -> None:
             best_dice = sel_metric
             best_threshold = epoch_best_threshold
             no_improve_epochs = 0
-            # best.pt is for eval/inference only; the optimizer_state (~2.3 GB
-            # here) is never needed to load it. Omitting it keeps best.pt small
-            # (model_state only) -- resume always uses last.pt, which still
-            # carries the optimizer_state. This avoids filling the disk with two
-            # multi-GB checkpoints per run.
             torch.save(
                 {
                     "epoch": epoch,
@@ -1670,12 +1667,6 @@ def main() -> None:
             no_improve_epochs += 1
 
         history_path.write_text(json.dumps(history, indent=2), encoding="utf-8")
-
-        # End-of-epoch memory hygiene. macOS+MPS leaks ~tens of MB per epoch via
-        # cached MPS tensors and DataLoader-worker prefetch buffers, which adds
-        # up to OOM over ~50 epoch runs (jetsam SIGKILL with leaked semaphores).
-        # gc.collect() reclaims Python-side cycles; torch.mps.empty_cache() drops
-        # the MPS allocator's cached blocks; the CUDA branch is harmless on Mac.
         gc.collect()
         if device.type == "mps" and hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
             torch.mps.empty_cache()
