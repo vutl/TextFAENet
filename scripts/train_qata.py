@@ -202,6 +202,8 @@ def create_model(args, device: torch.device):
             fusion_mode=args.fusion_mode,
             unfreeze_last_n=args.unfreeze_last_n,
             lora_r=args.lora_r,
+            freeze_freq_gate=args.freeze_freq_gate,
+            disable_spatial_mask=args.disable_spatial_mask,
         )
 
     if args.model_type != "faenet" and args.use_cxr_bert:
@@ -593,6 +595,23 @@ def main() -> None:
     parser.add_argument("--aux-w-d2", type=float, default=0.8)
     parser.add_argument("--low-level-hf-scale", type=float, default=0.6)
     parser.add_argument("--spatial-sharpen-power", type=float, default=2.0)
+    parser.add_argument(
+        "--freeze-freq-gate",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Ablation (Group C1): replace the text->band gate (Eq.7) with a "
+        "text-independent learned constant of matched parameter count, cutting "
+        "the text->frequency pathway while keeping the token-grounded spatial "
+        "mask active.",
+    )
+    parser.add_argument(
+        "--disable-spatial-mask",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Ablation (Group C2): remove the token-grounded spatial mask "
+        "(mask degenerates to a constant), cutting the token->spatial pathway "
+        "while keeping text-conditioned frequency gating active.",
+    )
 
     args = parser.parse_args()
     if args.no_text and args.model_type != "faenet":
@@ -620,7 +639,13 @@ def main() -> None:
         raise ValueError("--grad-clip-norm must be non-negative")
     set_seed(args.seed)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
+    # AMP (fp16 autocast + GradScaler) is CUDA-only here; on MPS/CPU it stays off.
     args.use_amp = bool(args.use_amp and device.type == "cuda" and args.model_type != "faenet")
 
     model, tokenizer = create_model(args, device)

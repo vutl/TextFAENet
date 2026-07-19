@@ -128,6 +128,42 @@ VARIANTS: dict[str, dict[str, str | int | bool]] = {
         "fusion_mode": "both",
         "unfreeze_last_n": 1,
     },
+    # --- Group C: isolate the two TGFS pathways of Eq.7 (pooled text -> band
+    # gate vs. token embeddings -> spatial mask). Base config matches the main
+    # model (CXR-BERT frozen, native prompt, learned HH policy, both fusion) so
+    # C0 is directly comparable to the reported SOTA/Table-4 numbers.
+    "C0_full_tgfs": {
+        "use_cxr_bert": True,
+        "prompt_mode": "native",
+        "hh_drop_mode": "learned",
+        "fusion_mode": "both",
+        "freeze_freq_gate": False,
+        "disable_spatial_mask": False,
+    },
+    "C1_freeze_freq_gate": {
+        "use_cxr_bert": True,
+        "prompt_mode": "native",
+        "hh_drop_mode": "learned",
+        "fusion_mode": "both",
+        "freeze_freq_gate": True,
+        "disable_spatial_mask": False,
+    },
+    "C2_no_spatial_mask": {
+        "use_cxr_bert": True,
+        "prompt_mode": "native",
+        "hh_drop_mode": "learned",
+        "fusion_mode": "both",
+        "freeze_freq_gate": False,
+        "disable_spatial_mask": True,
+    },
+    "C3_no_pathways": {
+        "use_cxr_bert": True,
+        "prompt_mode": "native",
+        "hh_drop_mode": "learned",
+        "fusion_mode": "both",
+        "freeze_freq_gate": True,
+        "disable_spatial_mask": True,
+    },
 }
 
 
@@ -150,6 +186,8 @@ def add_variant_flags(cmd: list[str], variant: dict[str, str | int | bool]) -> l
     cmd.extend(["--unfreeze-last-n", str(int(variant.get("unfreeze_last_n", 0)))])
     cmd.extend(["--lora-r", str(int(variant.get("lora_r", 0)))])
     cmd.append("--freeze-text-backbone")
+    cmd.append("--freeze-freq-gate" if variant.get("freeze_freq_gate", False) else "--no-freeze-freq-gate")
+    cmd.append("--disable-spatial-mask" if variant.get("disable_spatial_mask", False) else "--no-disable-spatial-mask")
     return cmd
 
 

@@ -132,6 +132,8 @@ def build_model_from_config(cfg: dict[str, Any], device: torch.device) -> torch.
             fusion_mode=cfg.get("fusion_mode", "decoder"),
             unfreeze_last_n=int(cfg.get("unfreeze_last_n", 0) or 0),
             lora_r=int(cfg.get("lora_r", 0) or 0),
+            freeze_freq_gate=bool(cfg.get("freeze_freq_gate", False)),
+            disable_spatial_mask=bool(cfg.get("disable_spatial_mask", False)),
         )
     else:
         raise ValueError(f"Unsupported model_type: {model_type}")
