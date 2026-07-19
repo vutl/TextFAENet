@@ -399,12 +399,20 @@ class TGFSBlockV2(nn.Module):
         norm_type: str = "bn",
         dropout_p: float = 0.0,
         grounding_n_heads: int = 1,
+        freeze_freq_gate: bool = False,
+        disable_spatial_mask: bool = False,
     ) -> None:
         super().__init__()
         self.channels = channels
         if hh_drop_mode not in {"zero", "keep", "learned"}:
             raise ValueError(f"Unsupported hh_drop_mode: {hh_drop_mode}")
         self.hh_drop_mode = hh_drop_mode
+        # Ablation switches (Group C/D, Eq.7 pathway isolation): freeze_freq_gate
+        # replaces the text->band gate with a text-independent learned constant
+        # (same parameter count, C1); disable_spatial_mask removes the
+        # token-grounded spatial mask entirely (C2).
+        self.freeze_freq_gate = freeze_freq_gate
+        self.disable_spatial_mask = disable_spatial_mask
         self.learnable_lh_hl_scale = learnable_lh_hl_scale
         if learnable_lh_hl_scale:
             self.lh_hl_scale = nn.Parameter(torch.tensor(float(lh_hl_scale), dtype=torch.float32))
@@ -446,6 +454,11 @@ class TGFSBlockV2(nn.Module):
             nn.GELU(),
             nn.Linear(text_dim, channels * 4),
         )
+        if self.freeze_freq_gate:
+            # C1: same parameter count as the text-conditioned gate above, but the
+            # value no longer depends on text_pooled (cuts the text->band pathway
+            # while keeping model capacity matched for a fair comparison).
+            self.const_freq_gate_logits = nn.Parameter(torch.zeros(channels * 4))
         self.text_k = nn.Linear(text_dim, channels)
         self.text_v = nn.Linear(text_dim, channels)
         self.vis_q = nn.Conv2d(channels * 4, channels, kernel_size=1, bias=False)
@@ -502,7 +515,10 @@ class TGFSBlockV2(nn.Module):
         lh = self.icca_lh(lh)
         hl = self.icca_hl(hl)
         hh = self.icca_hh(hh)
-        gates = self.freq_gate(text_pooled)
+        if self.freeze_freq_gate:
+            gates = self.const_freq_gate_logits.unsqueeze(0).expand(b, -1)
+        else:
+            gates = self.freq_gate(text_pooled)
         g_ll, g_lh, g_hl, g_hh = [t.contiguous() for t in torch.chunk(gates, 4, dim=1)]
         a_ll = torch.sigmoid(g_ll).reshape(b, c, 1, 1)
         a_lh = torch.sigmoid(g_lh).reshape(b, c, 1, 1)
@@ -522,7 +538,13 @@ class TGFSBlockV2(nn.Module):
             hh = hh * torch.sigmoid(self.hh_keep_logit)
         ll, lh, hl, hh = self.ccca(ll, lh, hl, hh)
         agg = torch.cat([ll, lh, hl, hh], dim=1)
-        spatial_mask_raw = self._token_grounding(agg, text_tokens, text_mask)
+        if self.disable_spatial_mask:
+            # C2: cut the token->spatial pathway entirely (no cross-attention with
+            # text tokens); the mask degenerates to a constant so agg passes through
+            # unmodulated by text-grounded location.
+            spatial_mask_raw = agg.new_ones((b, 1, agg.shape[-2], agg.shape[-1]))
+        else:
+            spatial_mask_raw = self._token_grounding(agg, text_tokens, text_mask)
         # Save the raw sigmoid mask (before sharpening) so the train loop can
         # supervise it directly with the ground-truth segmentation mask.
         self.last_spatial_mask = spatial_mask_raw
@@ -575,6 +597,8 @@ class TGFSDecoderStageV2(nn.Module):
         dropout_p: float = 0.0,
         grounding_n_heads: int = 1,
         conv_block_depth: int = 2,
+        freeze_freq_gate: bool = False,
+        disable_spatial_mask: bool = False,
     ) -> None:
         super().__init__()
         self.reduce = nn.Sequential(
@@ -601,6 +625,8 @@ class TGFSDecoderStageV2(nn.Module):
             norm_type=norm_type,
             dropout_p=dropout_p,
             grounding_n_heads=grounding_n_heads,
+            freeze_freq_gate=freeze_freq_gate,
+            disable_spatial_mask=disable_spatial_mask,
         )
 
     def forward(self, x: torch.Tensor, skip: torch.Tensor, text_pooled: torch.Tensor, text_tokens: torch.Tensor, text_mask: Optional[torch.Tensor] = None):
@@ -759,6 +785,8 @@ class LFAENetTGFSv2(nn.Module):
         freeze_encoder_bn: bool = True,
         image_backbone_weights: str = 'imagenet',
         radimagenet_ckpt: str | None = None,
+        freeze_freq_gate: bool = False,
+        disable_spatial_mask: bool = False,
     ) -> None:
         super().__init__()
         if fusion_mode not in {'decoder', 'both'}:
@@ -799,6 +827,8 @@ class LFAENetTGFSv2(nn.Module):
             dropout_p=dropout_p,
             grounding_n_heads=grounding_n_heads,
             conv_block_depth=conv_block_depth,
+            freeze_freq_gate=freeze_freq_gate,
+            disable_spatial_mask=disable_spatial_mask,
         )
 
         if encoder_type == 'resnet50':
