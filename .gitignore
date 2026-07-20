@@ -9,7 +9,12 @@ paper_figures/
 .fmiseg_legacy_eval/
 .agents/
 external_metrics/
+external_runs/
 generated_figures/
 __pycache__/
 *.py[cod]
 *.tmp
+*.pt
+*.zip
+last-002.pt
+mosmed_v9e_448-20260714T155657Z-1-001.zip

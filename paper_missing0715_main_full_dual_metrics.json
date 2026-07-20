@@ -1,0 +1,28 @@
+[
+  {
+    "run": "paper_missing0715_qata_resnet50_simple_native_keep_decoder_seed42",
+    "checkpoint": "best.pt",
+    "checkpoint_epoch": 9,
+    "threshold": 0.35,
+    "num_images": 2113,
+    "per_image_dice": 0.829276134624461,
+    "per_image_dice_std": 0.18718364741109755,
+    "per_image_dice_median": 0.8927820324897766,
+    "per_image_iou": 0.7422932636995482,
+    "per_image_iou_std": 0.21677339169979482,
+    "per_image_iou_median": 0.8063291311264038,
+    "global_dice": 0.9028816069964725,
+    "global_iou": 0.822957315048474,
+    "old_final_dice": 0.8290935159306327,
+    "old_final_iou": 0.7420172804032804,
+    "inference_amp": false,
+    "per_image_csv": "runs\\paper_missing0715_qata_resnet50_simple_native_keep_decoder_seed42\\test_per_image_metrics.csv",
+    "model_type": "resnet50_tgfs_v2",
+    "visual_encoder": "imagenet",
+    "text_encoder": "simple",
+    "fusion_mode": "decoder",
+    "hh_drop_mode": "keep",
+    "legacy_state_remapped": 0,
+    "legacy_wavelet_buffers_dropped": 0
+  }
+]

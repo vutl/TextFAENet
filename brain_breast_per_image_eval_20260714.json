@@ -1,0 +1,46 @@
+[
+  {
+    "run": "paper0623_brain_structured_v3resnet50cxr_both_seed42",
+    "threshold": 0.35,
+    "num_images": 600,
+    "loss": 0.13875206224620343,
+    "per_image_dice": 0.8359877142599451,
+    "per_image_iou": 0.7430325872988728,
+    "global_dice": 0.8364684142416426,
+    "global_iou": 0.7189047761832813,
+    "per_image_csv": "runs\\paper0623_brain_structured_v3resnet50cxr_both_seed42\\test_per_image_metrics.csv"
+  },
+  {
+    "run": "paper0623_brain_medclip_prompt_v3resnet50cxr_both_seed42",
+    "threshold": 0.55,
+    "num_images": 600,
+    "loss": 0.14379830137516061,
+    "per_image_dice": 0.840777392282528,
+    "per_image_iou": 0.7533482400893593,
+    "global_dice": 0.8440492838979238,
+    "global_iou": 0.7301775691131941,
+    "per_image_csv": "runs\\paper0623_brain_medclip_prompt_v3resnet50cxr_both_seed42\\test_per_image_metrics.csv"
+  },
+  {
+    "run": "paper0623_breast_structured_v3resnet50cxr_both_seed42",
+    "threshold": 0.55,
+    "num_images": 113,
+    "loss": 0.14473258268780412,
+    "per_image_dice": 0.852172853170265,
+    "per_image_iou": 0.7660195142020387,
+    "global_dice": 0.8783624411152359,
+    "global_iou": 0.7831071937255962,
+    "per_image_csv": "runs\\paper0623_breast_structured_v3resnet50cxr_both_seed42\\test_per_image_metrics.csv"
+  },
+  {
+    "run": "paper0623_breast_medclip_prompt_v3resnet50cxr_both_seed42",
+    "threshold": 0.35,
+    "num_images": 113,
+    "loss": 0.1796718828577911,
+    "per_image_dice": 0.8023021077496595,
+    "per_image_iou": 0.7179342153661853,
+    "global_dice": 0.8051522511677605,
+    "global_iou": 0.6738534277316918,
+    "per_image_csv": "runs\\paper0623_breast_medclip_prompt_v3resnet50cxr_both_seed42\\test_per_image_metrics.csv"
+  }
+]

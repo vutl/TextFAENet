@@ -1,0 +1,41 @@
+TRAIN:
+  dataset_name: breast_tumors
+  wavelet_type: haar
+  train_batch_size: 8
+  lr: 0.0003
+  valid_batch_size: 4
+  image_size: [224, 224]
+  min_epochs: 20
+  max_epochs: 120
+  patience: 20
+  device: 0
+  model_save_path: D:/Documents/LMIS/Text-FAENet/external_runs/fmiseg_breast_medclip_prompt
+  model_save_filename: fmis-breast-medclip-{epoch:02d}-{val_dice_image:.4f}
+  checkpoint_monitor: val_dice_image
+  checkpoint_mode: max
+  experiment_name: fmiseg_breast_medclip_prompt
+  log_root: D:/Documents/LMIS/Text-FAENet/external_runs/fmiseg_logs
+  seed: 42
+  matmul_precision: medium
+  log_every_n_steps: 10
+  accumulate_grad_batches: 4
+  auto_pos_weight: true
+  min_bce_pos_weight: 1.0
+  max_bce_pos_weight: 256.0
+  run_test_after_fit: true
+  auto_prompt_from_mask: false
+  test_metrics_filename: final_test_metrics.json
+  resume_latest: true
+
+MODEL:
+  bert_type: ./lib/BiomedVLP-CXR-BERT-specialized
+  vision_type: ./lib/convnext-tiny-224
+  project_dim: 768
+
+DATA:
+  train_csv_path: D:/Documents/LMIS/Text-FAENet/external_runs/fmiseg_prompt_csvs/breast_tumors/train.csv
+  train_root_path: D:/Documents/LMIS/Text-FAENet/datasets/breast_tumors
+  val_csv_path: D:/Documents/LMIS/Text-FAENet/external_runs/fmiseg_prompt_csvs/breast_tumors/val.csv
+  val_root_path: D:/Documents/LMIS/Text-FAENet/datasets/breast_tumors
+  test_csv_path: D:/Documents/LMIS/Text-FAENet/external_runs/fmiseg_prompt_csvs/breast_tumors/test.csv
+  test_root_path: D:/Documents/LMIS/Text-FAENet/datasets/breast_tumors

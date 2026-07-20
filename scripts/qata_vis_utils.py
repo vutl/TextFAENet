@@ -109,7 +109,9 @@ def build_model_from_config(cfg: dict[str, Any], device: torch.device) -> torch.
         model = ResNet50FAENet(
             in_channels=1,
             num_classes=1,
-            visual_pretrained=cfg.get("visual_pretrained", "imagenet"),
+            # The full encoder state is restored below; avoid a redundant
+            # torchvision download when rendering from a local checkpoint.
+            visual_pretrained="none",
             freq_drop_bands=cfg.get("freq_drop_bands"),
         )
     elif model_type == "lfaenet_tgfs":
@@ -141,13 +143,16 @@ def build_model_from_config(cfg: dict[str, Any], device: torch.device) -> torch.
             lora_r=int(cfg.get("lora_r", 0) or 0),
         )
     elif model_type == "lfaenet_tgfs_v3":
+        text_backbone_path = cfg.get("cxr_bert_dir", "BiomedVLP-CXR-BERT-specialized")
+        if not Path(text_backbone_path).exists() and Path("BiomedVLP-CXR-BERT-specialized").exists():
+            text_backbone_path = "BiomedVLP-CXR-BERT-specialized"
         model = LFAENetTGFSv3(
             in_channels=1,
             num_classes=1,
             text_dim=int(cfg.get("text_dim", 256)),
             vocab_size=int(cfg.get("vocab_size", 30522)),
             text_encoder_type=text_encoder_type,
-            text_backbone_path=cfg.get("cxr_bert_dir", "BiomedVLP-CXR-BERT-specialized"),
+            text_backbone_path=text_backbone_path,
             freeze_text_backbone=bool(cfg.get("freeze_text_backbone", True)),
             hh_drop_mode=cfg.get("hh_drop_mode", "keep"),
             low_level_hf_scale=float(cfg.get("low_level_hf_scale", 0.6)),
@@ -155,7 +160,20 @@ def build_model_from_config(cfg: dict[str, Any], device: torch.device) -> torch.
             fusion_mode=cfg.get("fusion_mode", "decoder"),
             unfreeze_last_n=int(cfg.get("unfreeze_last_n", 0) or 0),
             lora_r=int(cfg.get("lora_r", 0) or 0),
+            lora_alpha=float(cfg.get("lora_alpha", 16.0)),
             text_pooling=cfg.get("text_pooling", "mean"),
+            learnable_low_level_hf_scale=bool(cfg.get("learnable_low_level_hf_scale", False)),
+            learnable_spatial_sharpen=bool(cfg.get("learnable_spatial_sharpen", False)),
+            use_deep_supervision=bool(cfg.get("use_deep_supervision", False)),
+            encoder_text_fusion=cfg.get("encoder_text_fusion", "film"),
+            norm_type=cfg.get("norm_type", "bn"),
+            conv_block_depth=int(cfg.get("conv_block_depth", 2)),
+            dropout_p=float(cfg.get("dropout_p", 0.0)),
+            grounding_n_heads=int(cfg.get("grounding_n_heads", 1)),
+            encoder_type=cfg.get("encoder_type", cfg.get("v3_encoder_type", "from_scratch")),
+            # A full visual state is restored from the checkpoint.
+            pretrained_image_encoder=False,
+            freeze_encoder_bn=bool(cfg.get("freeze_encoder_bn", True)),
         )
     elif model_type == "resnet50_tgfs_v2":
         model = ResNet50TGFSv2(
@@ -166,7 +184,8 @@ def build_model_from_config(cfg: dict[str, Any], device: torch.device) -> torch.
             text_encoder_type=text_encoder_type,
             text_backbone_path=cfg.get("cxr_bert_dir", "BiomedVLP-CXR-BERT-specialized"),
             freeze_text_backbone=bool(cfg.get("freeze_text_backbone", True)),
-            visual_pretrained=cfg.get("visual_pretrained", "imagenet"),
+            # The checkpoint contains the complete ResNet encoder.
+            visual_pretrained="none",
             hh_drop_mode=cfg.get("hh_drop_mode", "keep"),
             low_level_hf_scale=float(cfg.get("low_level_hf_scale", 0.6)),
             spatial_sharpen_power=float(cfg.get("spatial_sharpen_power", 2.0)),
@@ -183,14 +202,17 @@ def build_model_from_config(cfg: dict[str, Any], device: torch.device) -> torch.
 
 
 def build_tokenizer(cfg: dict[str, Any]):
-    if cfg.get("model_type") == "faenet":
+    if cfg.get("model_type") in {"faenet", "resnet50_faenet"}:
         return None
     if not cfg.get("use_cxr_bert", True):
         return None
     from transformers import AutoTokenizer
 
+    text_backbone_path = cfg.get("cxr_bert_dir", "BiomedVLP-CXR-BERT-specialized")
+    if not Path(text_backbone_path).exists() and Path("BiomedVLP-CXR-BERT-specialized").exists():
+        text_backbone_path = "BiomedVLP-CXR-BERT-specialized"
     return AutoTokenizer.from_pretrained(
-        cfg.get("cxr_bert_dir", "BiomedVLP-CXR-BERT-specialized"),
+        text_backbone_path,
         trust_remote_code=True,
         local_files_only=True,
     )
@@ -200,6 +222,8 @@ def load_run(run_dir: Path, device: torch.device):
     cfg = read_json(run_dir / "config.json")
     if not isinstance(cfg, dict):
         raise FileNotFoundError(f"Missing or invalid config.json: {run_dir}")
+    if "model_type" not in cfg and cfg.get("encoder_type") in {"from_scratch", "resnet50"}:
+        cfg["model_type"] = "lfaenet_tgfs_v3"
     model = build_model_from_config(cfg, device)
     ckpt_path = run_dir / "best.pt"
     if not ckpt_path.exists():
@@ -235,7 +259,7 @@ def predict_one(
     image_b = image.unsqueeze(0).to(device)
     if capture_debug and hasattr(model, "set_debug_capture"):
         model.set_debug_capture(True)
-    if cfg.get("model_type") == "faenet":
+    if cfg.get("model_type") in {"faenet", "resnet50_faenet"}:
         logits = model(image_b)
     else:
         ids, mask = encode_texts([text], tokenizer, cfg)

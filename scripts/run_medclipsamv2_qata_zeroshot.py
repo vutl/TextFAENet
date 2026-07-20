@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -129,6 +130,65 @@ def evaluate_and_export(
 def run_cmd(cmd: list[str], cwd: Path, env: dict[str, str]) -> None:
     print(" ".join(cmd), flush=True)
     subprocess.run(cmd, cwd=str(cwd), env=env, check=True)
+
+
+def run_sam_for_missing(
+    medclip_root: Path,
+    image_dir: Path,
+    coarse_dir: Path,
+    sam_dir: Path,
+    image_names: list[str],
+    device: str,
+    multicontour: bool,
+    env: dict[str, str],
+) -> None:
+    missing = [name for name in image_names if not (sam_dir / name).is_file()]
+    if not missing:
+        print("All selected SAM masks already exist; skipping SAM.", flush=True)
+        return
+    pending_root = Path(tempfile.mkdtemp(prefix="sam_pending_", dir=str(sam_dir.parent)))
+    pending_images = pending_root / "images"
+    pending_masks = pending_root / "coarse_masks"
+    pending_images.mkdir(parents=True, exist_ok=True)
+    pending_masks.mkdir(parents=True, exist_ok=True)
+    for name in missing:
+        image_path = image_dir / name
+        coarse_path = coarse_dir / name
+        if not image_path.is_file() or not coarse_path.is_file():
+            raise FileNotFoundError(
+                f"Cannot prepare SAM input for {name}: image={image_path.is_file()} "
+                f"coarse={coarse_path.is_file()}"
+            )
+        shutil.copy2(image_path, pending_images / name)
+        shutil.copy2(coarse_path, pending_masks / name)
+
+    command = [
+        sys.executable,
+        "segment-anything/prompt_sam.py",
+        "--input",
+        str(pending_images),
+        "--mask-input",
+        str(pending_masks),
+        "--output",
+        str(sam_dir),
+        "--model-type",
+        "vit_h",
+        "--checkpoint",
+        str(
+            medclip_root
+            / "segment-anything"
+            / "sam_checkpoints"
+            / "sam_vit_h_4b8939.pth"
+        ),
+        "--prompts",
+        "boxes",
+        "--device",
+        device,
+    ]
+    if multicontour:
+        command.append("--multicontour")
+    print(f"Running SAM for {len(missing)}/{len(image_names)} missing masks.", flush=True)
+    run_cmd(command, cwd=medclip_root, env=env)
 
 
 def run_patched_saliency(
@@ -322,44 +382,25 @@ def main() -> None:
         run_cmd(
             python_cmd
             + [
-                "postprocessing/postprocess_saliency_maps.py",
-                "--input-path",
-                str(work_images),
+                str(ROOT / "scripts" / "medclipsamv2_kmeans_postprocess.py"),
                 "--output-path",
                 str(coarse_dir),
                 "--sal-path",
                 str(saliency_dir),
-                "--postprocess",
-                "kmeans",
-                "--filter",
                 "--num-contours",
                 str(args.num_contours),
             ],
-            cwd=medclip_root,
+            cwd=ROOT,
             env=env,
         )
-        sam_ckpt = medclip_root / "segment-anything" / "sam_checkpoints" / "sam_vit_h_4b8939.pth"
-        run_cmd(
-            python_cmd
-            + [
-                "segment-anything/prompt_sam.py",
-                "--input",
-                str(work_images),
-                "--mask-input",
-                str(coarse_dir),
-                "--output",
-                str(sam_dir),
-                "--model-type",
-                "vit_h",
-                "--checkpoint",
-                str(sam_ckpt),
-                "--prompts",
-                "boxes",
-                "--multicontour",
-                "--device",
-                args.device,
-            ],
-            cwd=medclip_root,
+        run_sam_for_missing(
+            medclip_root=medclip_root,
+            image_dir=work_images,
+            coarse_dir=coarse_dir,
+            sam_dir=sam_dir,
+            image_names=[rec["image_name"] for rec in selected],
+            device=args.device,
+            multicontour=True,
             env=env,
         )
 
@@ -370,6 +411,12 @@ def main() -> None:
         pred_mask_dir=args.out_dir / "pred_masks",
         output_csv=args.out_dir / "test_per_image_metrics.csv",
         output_json=args.out_dir / "summary.json",
+    )
+    summary["dataset_name"] = "QaTa-COV19-v2"
+    summary["prompt_format"] = "our structured prompt"
+    summary["prompt_csv"] = str(qata_root / "prompt" / f"{args.split}.csv")
+    (args.out_dir / "summary.json").write_text(
+        json.dumps(summary, indent=2), encoding="utf-8"
     )
     summary_md = args.out_dir / "summary.md"
     summary_md.write_text(
